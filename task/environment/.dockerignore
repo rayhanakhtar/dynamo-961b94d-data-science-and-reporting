@@ -1,0 +1,25 @@
+# Version control
+.git/
+**/.git/
+.gitignore
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Python caches and virtualenvs
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+.venv/
+**/.venv/
+
+# Editor / scratch files
+.idea/
+.vscode/
+*.swp
+*.tmp

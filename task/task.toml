@@ -34,5 +34,5 @@ cpus = 1                           # increase for parallel/compute-heavy workloa
 memory_mb = 2048                   # increase for large datasets or in-memory processing
 storage_mb = 10240                 # increase for tasks with large files or build artifacts
 gpus = 0                           # max 1, expect H100
-allow_internet = false             # pure local Python task: no runtime network dependence
+allow_internet = true              # open-internet convention; the answer is not retrievable online
 mcp_servers = []                   # optional MCP servers to expose to the agent

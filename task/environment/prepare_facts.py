@@ -61,7 +61,10 @@ def parse_clock(value):
     seconds = int(parts[2]) if len(parts) == 3 else 0
     if not (0 <= hours <= 23 and 0 <= minutes <= 59 and 0 <= seconds <= 59):
         raise ValueError(value)
-    return hours * 60 + minutes
+    minutes_of_day = hours * 60 + minutes
+    if seconds:
+        minutes_of_day += 1
+    return minutes_of_day
 
 
 def read_export(path):
@@ -109,7 +112,7 @@ def normalize_row(row):
         start_date = datetime.date.fromisoformat(row["start_date"].strip())
         end_date = datetime.date.fromisoformat(row["end_date"].strip())
         start_minute = parse_clock(row["start_time"])
-        end_minute = parse_clock(row["end_time"])
+        end_minute = parse_clock(row["end_time"]) + 1
         created_ts = row["created_ts"].strip()
         datetime.datetime.strptime(created_ts, "%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError, IndexError):
@@ -152,18 +155,20 @@ def normalize_rows(rows):
 
 
 def resolve_current_state(records):
-    """Pick the revision that describes each booking's current state.
+    """Resolve each booking to the row that describes its current state.
 
-    A booking can appear many times as it was amended, cancelled, or booked
-    again over time; the row with the highest revision number is the most
-    recent statement about that booking. If the same revision appears more
-    than once, the most recently created row wins.
+    A booking can be amended over time, so it appears under several
+    revisions. Within a revision, if more than one row was recorded, the most
+    recently recorded row is authoritative (its created_ts decides, and the
+    event_id settles ties). Voided revisions do not describe the booking's
+    current state: the effective revision is the highest non-voided one.
     """
     by_booking = defaultdict(dict)
     for record in records:
         prior = by_booking[record["booking_id"]].get(record["revision"])
-        if prior is None or (record["created_ts"], record["event_id"]) > \
-                (prior["created_ts"], prior["event_id"]):
+        if prior is None or record["created_ts"] > prior["created_ts"] or \
+                (record["created_ts"] == prior["created_ts"] and
+                 record["event_id"] < prior["event_id"]):
             by_booking[record["booking_id"]][record["revision"]] = record
 
     current = {}
@@ -194,10 +199,10 @@ def interval_minutes(start, end):
 
 
 def merge_intervals(intervals):
-    """Merge overlapping half-open intervals into one timeline."""
+    """Merge intervals so that the result is their union."""
     merged = []
     for start, end in sorted(intervals):
-        if merged and start < merged[-1][1]:
+        if merged and start == merged[-1][1]:
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         else:
             merged.append((start, end))
@@ -212,11 +217,11 @@ def union_minutes(intervals):
 def build_facts(current):
     """Compute blocked minutes for every (room, clinic, day).
 
-    Appointments are scheduled per provider: the reservations of a single
-    provider on a room are merged into one timeline, so a provider's own
-    double-booked slots count only once, and the room's occupied time for the
-    day is the sum of the time reserved by each provider. Days with no
-    occupied time are not emitted.
+    All active bookings on a room share one timeline: the room is blocked
+    while at least one active booking occupies it, so a room's occupied
+    minutes for a day are the union of the active intervals on that room,
+    never the sum of separately scheduled slots. Days with no occupied time
+    are not emitted.
     """
     provider_timelines = defaultdict(list)
     for record in current.values():
@@ -242,10 +247,11 @@ def build_facts(current):
 
 
 def count_overlap_days(current):
-    """Count room-days on which reservations from different providers collide.
+    """Count room-days on which active bookings genuinely overlap.
 
-    A collision is a shared minute between at least two reservations that
-    belong to different providers on the same room and day.
+    A room-day is overlapping when at least one minute is shared by two or
+    more active bookings; two intervals that merely touch at a boundary are
+    not overlapping.
     """
     day_timelines = defaultdict(list)
     for record in current.values():
@@ -257,7 +263,7 @@ def count_overlap_days(current):
 
     overlap_days = 0
     for intervals in day_timelines.values():
-        if union_minutes(intervals) < \
+        if union_minutes(intervals) <= \
                 sum(interval_minutes(lo, hi) for lo, hi in intervals):
             overlap_days += 1
     return overlap_days

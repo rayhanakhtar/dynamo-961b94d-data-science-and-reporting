@@ -55,7 +55,7 @@ SUMMARY_KEYS = [
 ]
 
 # Independently audited whole-dataset total (fact_contract.md sections 15-17).
-TOTAL_BLOCKED_MINUTES = 50642
+TOTAL_BLOCKED_MINUTES = 51093
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_facts_columns_and_minutes(facts_rows):
 
 def test_facts_row_count(facts_rows):
     _header, rows = facts_rows
-    assert len(rows) == 229, "expected 229 fact rows, got %d" % len(rows)
+    assert len(rows) == 235, "expected 235 fact rows, got %d" % len(rows)
 
 
 def test_facts_unique_cells(facts_rows):
@@ -562,6 +562,64 @@ STATE_DEPENDENT_CELLS = {
 @pytest.mark.parametrize("label", sorted(STATE_DEPENDENT_CELLS))
 def test_state_dependent_cells(facts_lookup, label):
     (room, clinic, date), expected = STATE_DEPENDENT_CELLS[label]
+    key = (room, clinic, date)
+    actual = facts_lookup.get(key)
+    assert actual == expected, \
+        "%s: %r = %r, expected %r" % (label, key, actual, expected)
+
+
+# ---------------------------------------------------------------------------
+# 11. Atomic semantic checks — cross-stage calibration fixtures
+#     (fact_contract.md sections 3-17)
+# ---------------------------------------------------------------------------
+#
+# Each cell fixes the downstream consequence of a precise semantic rule:
+# the same-created_ts collision tie-break, the half-open [start, end)
+# boundary (including intervals that end exactly at midnight), the union of
+# overlapping intervals, the dedup/validation interaction with collision
+# resolution, the treatment of touching intervals for the overlap summary,
+# and the minute-truncation of seconds-bearing times.
+
+CROSS_STAGE_CELLS = {
+    # Collision tie-break (sections 5, 7, 12): BK-2301's rev2 has two rows
+    # with the SAME created_ts; section 5 breaks the tie by greatest event_id,
+    # so the BOOKED RM-02 row wins and the effective [13:00,14:30) merges with
+    # BK-2302 [13:15,13:45) into 90 minutes on RM-02. The superseded RM-01
+    # revision emits nothing.
+    "tie-break collision lands on RM-02": (("RM-02", "CL-A", "2026-03-12"), 90),
+    "tie-break collision old room absent": (("RM-01", "CL-A", "2026-03-12"), None),
+    # Half-open boundary at midnight (sections 5, 7, 9, 10): BK-2303's rev2
+    # tie-break picks the BOOKED [23:00,00:00) row. The interval is half-open,
+    # so its 60 minutes belong to 2026-03-13 only; nothing leaks into
+    # 2026-03-14.
+    "midnight boundary day 1": (("RM-01", "CL-B", "2026-03-13"), 60),
+    "midnight boundary no next-day leak": (("RM-01", "CL-B", "2026-03-14"), None),
+    # Overlap merge (sections 11, 12): BK-2304 [09:00,10:30), BK-2305
+    # [10:00,11:00) and BK-2306 [10:15,10:45) share RM-04 on 2026-03-14; the
+    # room-wide union is [09:00,11:00) = 120 minutes regardless of provider.
+    "overlapping intervals merge to 120": (("RM-04", "CL-A", "2026-03-14"), 120),
+    # Dedup/validation -> collision -> effective revision (sections 4, 5, 7,
+    # 16): BK-2307's rev2 VOIDED event survives as its valid first copy and
+    # ties with the BOOKED row on created_ts; the greater event_id (VOIDED)
+    # wins the collision and is skipped, so the effective rev1 [09:00,10:00)
+    # on 2026-03-15 is single-day and nothing appears on 2026-03-16.
+    "dedup collision falls back to rev1": (("RM-01", "CL-C", "2026-03-15"), 60),
+    "dedup collision no next-day footprint": (("RM-01", "CL-C", "2026-03-16"), None),
+    # Touching intervals (sections 11, 12): BK-2308 [09:00,10:00) and BK-2309
+    # [10:00,11:00) merely touch, so their union is 120 minutes and the
+    # room-day is NOT overlapping.
+    "touching intervals union": (("RM-02", "CL-B", "2026-03-16"), 120),
+    # Seconds truncation (sections 3, 9): BK-2310 starts at 23:59:30; seconds
+    # are truncated to the minute, leaving a single blocked minute [23:59,
+    # 00:00) on 2026-03-17 and nothing on 2026-03-18.
+    "seconds truncated to the minute": (("RM-01", "CL-A", "2026-03-17"), 1),
+    "seconds interval stays on start day": (("RM-01", "CL-A", "2026-03-18"), None),
+}
+
+
+@pytest.mark.parametrize("label", sorted(CROSS_STAGE_CELLS))
+def test_cross_stage_cells(facts_lookup, label):
+    (room, clinic, date), expected = CROSS_STAGE_CELLS[label]
     key = (room, clinic, date)
     actual = facts_lookup.get(key)
     assert actual == expected, \

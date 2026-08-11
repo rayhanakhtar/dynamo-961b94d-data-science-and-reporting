@@ -65,6 +65,8 @@ The export has exactly these 13 columns, in this order:
 - If two or more rows carry the same `(booking_id, revision)` pair, the row with
   the latest `created_ts` is authoritative for that revision; if `created_ts`
   ties, the row with the greatest `event_id` (compared as strings) wins.
+- Collision resolution is applied before effective-revision selection; the
+  surviving row for a revision is that revision's sole content.
 
 ## 6. Status semantics
 

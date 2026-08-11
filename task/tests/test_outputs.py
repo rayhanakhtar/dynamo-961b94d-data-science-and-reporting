@@ -55,7 +55,7 @@ SUMMARY_KEYS = [
 ]
 
 # Independently audited whole-dataset total (fact_contract.md sections 15-17).
-TOTAL_BLOCKED_MINUTES = 49142
+TOTAL_BLOCKED_MINUTES = 49592
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_facts_columns_and_minutes(facts_rows):
 
 def test_facts_row_count(facts_rows):
     _header, rows = facts_rows
-    assert len(rows) == 211, "expected 211 fact rows, got %d" % len(rows)
+    assert len(rows) == 215, "expected 215 fact rows, got %d" % len(rows)
 
 
 def test_facts_unique_cells(facts_rows):
@@ -376,6 +376,49 @@ BOUNDARY_CELLS = {
 @pytest.mark.parametrize("label", sorted(BOUNDARY_CELLS))
 def test_boundary_cells(facts_lookup, label):
     (room, clinic, date), expected = BOUNDARY_CELLS[label]
+    key = (room, clinic, date)
+    actual = facts_lookup.get(key)
+    assert actual == expected, \
+        "%s: %r = %r, expected %r" % (label, key, actual, expected)
+
+
+# ---------------------------------------------------------------------------
+# 7. Atomic semantic checks — collision x voided composition
+#    (fact_contract.md sections 5-8, 12)
+# ---------------------------------------------------------------------------
+#
+# These cells exercise the composition of the same-revision collision rule
+# with the VOIDED-skip effective-revision scan and the shared-room union:
+# collision resolution (section 5) runs FIRST and fixes each revision's sole
+# content; only then does the descending-revision scan skip VOIDED winners and
+# pick the effective revision; that effective interval then feeds the union.
+
+COLLISION_CELLS = {
+    # BK-1701 + BK-1702 (different providers/sources) share RM-01 on
+    # 2026-01-18. BK-1701's rev2 collision winner is the later-created BOOKED
+    # row [11:30, 13:30); the earlier VOIDED copy must not win. The effective
+    # intervals [11:30, 13:30) and [10:00, 12:00) union to [10:00, 13:30) =
+    # 210, never the 240 sum of the two bookings.
+    "collision winner feeds shared-room union": (("RM-01", "CL-A", "2026-01-18"), 210),
+    # BK-1703 control: two rev2 rows, the first physical copy CANCELLED with an
+    # earlier created_ts, the second BOOKED with a later created_ts. The
+    # later-created BOOKED row must win regardless of file order, so the
+    # booking stays active [09:00, 10:00).
+    "collision control later-created booked wins": (("RM-03", "CL-A", "2026-01-18"), 60),
+    # BK-1704: the rev2 collision winner is the latest-created row, which is
+    # VOIDED (its physical order opposes its created_ts order). The
+    # effective-revision scan skips the voided winner and falls back to
+    # rev1 [09:00, 11:00).
+    "collided void skipped falls back to rev1": (("RM-04", "CL-A", "2026-01-18"), 120),
+    # BK-1705 control: two rev2 rows tie on created_ts; the greatest event_id
+    # (the BOOKED row) wins, keeping the booking active [11:00, 12:00).
+    "collision tie-break greatest event_id": (("RM-02", "CL-A", "2026-01-18"), 60),
+}
+
+
+@pytest.mark.parametrize("label", sorted(COLLISION_CELLS))
+def test_collision_cells(facts_lookup, label):
+    (room, clinic, date), expected = COLLISION_CELLS[label]
     key = (room, clinic, date)
     actual = facts_lookup.get(key)
     assert actual == expected, \

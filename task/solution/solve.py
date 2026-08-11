@@ -216,16 +216,14 @@ def resolve_bookings(clean_events):
     revision. A booking with no non-voided revision maps to None."""
     by_booking = {}
     for event in clean_events:
-        by_booking.setdefault(event.booking_id, {})[event.revision] = event
+        by_booking.setdefault(event.booking_id, {}) \
+            .setdefault(event.revision, []).append(event)
 
     authoritative = {}
     for booking_id, revisions in by_booking.items():
-        for revision, event in revisions.items():
-            key = (booking_id, revision)
-            current = authoritative.get(key)
-            if current is None or (event.created_ts, event.event_id) > \
-                    (current.created_ts, current.event_id):
-                authoritative[key] = event
+        for revision, events in revisions.items():
+            authoritative[(booking_id, revision)] = max(
+                events, key=lambda e: (e.created_ts, e.event_id))
 
     result = {}
     for booking_id, revisions in by_booking.items():

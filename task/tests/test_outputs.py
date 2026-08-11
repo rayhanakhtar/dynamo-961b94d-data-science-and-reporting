@@ -55,7 +55,7 @@ SUMMARY_KEYS = [
 ]
 
 # Independently audited whole-dataset total (fact_contract.md sections 15-17).
-TOTAL_BLOCKED_MINUTES = 49982
+TOTAL_BLOCKED_MINUTES = 50642
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_facts_columns_and_minutes(facts_rows):
 
 def test_facts_row_count(facts_rows):
     _header, rows = facts_rows
-    assert len(rows) == 220, "expected 220 fact rows, got %d" % len(rows)
+    assert len(rows) == 229, "expected 229 fact rows, got %d" % len(rows)
 
 
 def test_facts_unique_cells(facts_rows):
@@ -500,6 +500,68 @@ COMPOSED_CELLS = {
 @pytest.mark.parametrize("label", sorted(COMPOSED_CELLS))
 def test_composed_cells(facts_lookup, label):
     (room, clinic, date), expected = COMPOSED_CELLS[label]
+    key = (room, clinic, date)
+    actual = facts_lookup.get(key)
+    assert actual == expected, \
+        "%s: %r = %r, expected %r" % (label, key, actual, expected)
+
+
+# ---------------------------------------------------------------------------
+# 10. Atomic semantic checks — state-dependent cascading composition
+#     (fact_contract.md sections 4-17)
+# ---------------------------------------------------------------------------
+#
+# Each cell fixes the outcome of a decision chain: deduplication or collision
+# selection changes which revision content survives, which room it lands on,
+# which days it spans, and how it merges with another provider. A wrong choice
+# at any earlier stage produces a different fact value here.
+
+STATE_DEPENDENT_CELLS = {
+    # Family A, tie-break reassignment (sections 5, 7, 11, 12): BK-2201's rev2
+    # has a VOIDED RM-01 row and a BOOKED RM-02 row with the SAME created_ts;
+    # section 5 breaks the tie by greatest event_id, so the BOOKED RM-02 row
+    # wins, rev3 is VOIDED and skipped, and the effective [14:00,15:30)
+    # interval on RM-02 merges with BK-2202 [14:30,15:00) into 90 minutes.
+    # The superseded RM-01 revision emits nothing.
+    "tie-break reassignment lands on RM-02": (("RM-02", "CL-A", "2026-03-05"), 90),
+    "tie-break reassignment old room absent": (("RM-01", "CL-A", "2026-03-05"), None),
+    # Family B, revoked reschedule (sections 5, 7, 9, 10, 12): BK-2203's rev2
+    # collision winner is VOIDED (created later) and rev3 is VOIDED, so the
+    # effective rev1 [23:00,00:30) crosses midnight: 60 minutes on 2026-03-06
+    # and [00:00,00:30) on 2026-03-07, which merges with BK-2204 [00:15,00:45)
+    # into 45 minutes on the second day.
+    "revoked reschedule day 1": (("RM-02", "CL-B", "2026-03-06"), 60),
+    "revoked reschedule day 2 union": (("RM-02", "CL-B", "2026-03-07"), 45),
+    # Family C, inverse poison (sections 4, 5, 7, 16, 12): the first-copy
+    # deduplication decides whether the rev2 VOIDED event survives at all.
+    # BK-2205's duplicate is valid-first, so its VOIDED row survives, wins the
+    # collision, is skipped, and the booking falls back to rev1 [09:00,10:00)
+    # (60 with BK-2207 [09:15,09:45)). BK-2206's duplicate is malformed-first,
+    # so its VOIDED event is discarded before the collision and rev2's BOOKED
+    # [10:00,11:00) row is effective (90 with BK-2208 [10:30,11:30)).
+    "valid-first duplicate falls back to rev1": (("RM-03", "CL-A", "2026-03-07"), 60),
+    "malformed-first duplicate keeps rev2": (("RM-01", "CL-C", "2026-03-07"), 90),
+    # Family D, superseded room with colliding neighbor (sections 5, 7, 11,
+    # 12): BK-2209 moved from RM-04 to RM-03 (rev2 collision: VOIDED RM-04 row
+    # loses to the BOOKED RM-03 row by created_ts). The superseded RM-04
+    # interval must not leak: RM-04 carries only BK-2210 [09:30,10:30) = 60,
+    # while the effective [10:00,12:00) on RM-03 merges with BK-2211
+    # [11:00,12:30) into 150.
+    "superseded room carries only neighbor": (("RM-04", "CL-A", "2026-03-08"), 60),
+    "destination room union": (("RM-03", "CL-A", "2026-03-08"), 150),
+    # Full-chain booking (sections 4, 5, 7, 8, 9, 10, 12): BK-2212's rev2
+    # VOIDED event survives as its valid first copy and wins the collision
+    # (created later); rev3 is VOIDED, so the effective rev1 [23:00,00:30)
+    # crosses midnight on RM-01: 60 minutes on 2026-03-09 and [00:00,00:30) on
+    # 2026-03-10, which merges with BK-2213 [00:15,00:45) into 45.
+    "full chain midnight day 1": (("RM-01", "CL-A", "2026-03-09"), 60),
+    "full chain midnight day 2 union": (("RM-01", "CL-A", "2026-03-10"), 45),
+}
+
+
+@pytest.mark.parametrize("label", sorted(STATE_DEPENDENT_CELLS))
+def test_state_dependent_cells(facts_lookup, label):
+    (room, clinic, date), expected = STATE_DEPENDENT_CELLS[label]
     key = (room, clinic, date)
     actual = facts_lookup.get(key)
     assert actual == expected, \

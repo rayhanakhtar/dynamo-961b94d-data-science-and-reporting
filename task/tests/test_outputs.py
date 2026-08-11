@@ -55,7 +55,7 @@ SUMMARY_KEYS = [
 ]
 
 # Independently audited whole-dataset total (fact_contract.md sections 15-17).
-TOTAL_BLOCKED_MINUTES = 51093
+TOTAL_BLOCKED_MINUTES = 51663
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_facts_columns_and_minutes(facts_rows):
 
 def test_facts_row_count(facts_rows):
     _header, rows = facts_rows
-    assert len(rows) == 235, "expected 235 fact rows, got %d" % len(rows)
+    assert len(rows) == 242, "expected 242 fact rows, got %d" % len(rows)
 
 
 def test_facts_unique_cells(facts_rows):
@@ -620,6 +620,68 @@ CROSS_STAGE_CELLS = {
 @pytest.mark.parametrize("label", sorted(CROSS_STAGE_CELLS))
 def test_cross_stage_cells(facts_lookup, label):
     (room, clinic, date), expected = CROSS_STAGE_CELLS[label]
+    key = (room, clinic, date)
+    actual = facts_lookup.get(key)
+    assert actual == expected, \
+        "%s: %r = %r, expected %r" % (label, key, actual, expected)
+
+
+# ---------------------------------------------------------------------------
+# 12. Atomic semantic checks — state-propagation calibration fixtures
+#     (fact_contract.md sections 3-17)
+# ---------------------------------------------------------------------------
+#
+# Each cell pins a downstream consequence that is correct only when the
+# authoritative record is traced through dedup -> validation -> collision ->
+# effective revision -> attribution -> day materialization. These fixtures
+# are designed so that several plausible intermediate states produce
+# superficially reasonable outputs; only the contract-determined state chain
+# yields these exact values.
+
+STATE_PROPAGATION_CELLS = {
+    # Family A — competing lineage (sections 5, 7, 8, 12): BK-2401's rev2
+    # collision winner is the BOOKED RM-02 row (created_ts 11:00 beats the
+    # VOIDED 10:00 row); the later VOIDED rev3 is skipped, so the effective
+    # [14:00,15:30) on RM-02 merges with BK-2402 into 90 minutes. The
+    # superseded RM-01 lineage emits nothing.
+    "competing lineage lands on RM-02": (("RM-02", "CL-A", "2026-03-20"), 90),
+    "competing lineage old room absent": (("RM-01", "CL-A", "2026-03-20"), None),
+    # Family B — dedup survivor changes collision state (sections 4, 5, 16):
+    # BK-2403's rev2 VOIDED event has a malformed first copy, so it is set
+    # aside at validation and takes no part in the collision; the BOOKED
+    # [10:00,11:00) row is authoritative, unioning with BK-2404 into 60
+    # minutes on RM-03.
+    "dedup survivor collision union": (("RM-03", "CL-A", "2026-03-21"), 60),
+    # Family C — summary population vs fact population (sections 5, 13, 16,
+    # 17): both BK-2405 and BK-2406 resolve to a BOOKED rev2 winner on
+    # 2026-03-22. In BK-2405 the VOIDED rev2 loser is well-formed (it
+    # contributes to voided_revisions but not to capacity); in BK-2406 the
+    # analogous loser is malformed and contributes to neither.
+    "summary-vs-fact population CL-B": (("RM-01", "CL-B", "2026-03-22"), 60),
+    "summary-vs-fact population CL-C": (("RM-01", "CL-C", "2026-03-22"), 60),
+    # Family D — day materialization depends on effective state (sections 7,
+    # 10, 12): BK-2407's VOIDED rev3 is skipped; the effective BOOKED rev2
+    # occupies RM-04 [10:00,11:00) on 2026-03-24. The superseded rev1
+    # midnight-crossing interval on RM-02 (2026-03-23/24) emits nothing.
+    "effective state source day": (("RM-04", "CL-A", "2026-03-24"), 60),
+    "effective state superseded day absent": (("RM-02", "CL-A", "2026-03-23"), None),
+    "effective state superseded day absent 2": (("RM-02", "CL-A", "2026-03-24"), None),
+    # Family E — aggregation after state resolution (sections 7, 11, 12):
+    # BK-2408's superseded rev1 [09:00,11:00) is dropped; the union of the
+    # three active effective intervals on RM-04 is [10:00,13:00) = 180
+    # minutes.
+    "union of effective intervals only": (("RM-04", "CL-A", "2026-03-25"), 180),
+    # Family F — near-miss boundary (sections 10, 17): BK-2411's effective
+    # BOOKED rev2 is [23:00,00:00); its 60 minutes belong to 2026-03-26 only,
+    # and the booking is NOT multi-day. Nothing leaks into 2026-03-27.
+    "midnight-ending effective interval": (("RM-01", "CL-A", "2026-03-26"), 60),
+    "midnight-ending effective no leak": (("RM-01", "CL-A", "2026-03-27"), None),
+}
+
+
+@pytest.mark.parametrize("label", sorted(STATE_PROPAGATION_CELLS))
+def test_state_propagation_cells(facts_lookup, label):
+    (room, clinic, date), expected = STATE_PROPAGATION_CELLS[label]
     key = (room, clinic, date)
     actual = facts_lookup.get(key)
     assert actual == expected, \

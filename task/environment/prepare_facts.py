@@ -141,8 +141,8 @@ def normalize_row(row):
 
 
 def normalize_rows(rows):
-    """Validate every surviving row; return clean records plus the count of
-    rows that were set aside as malformed."""
+    """Validate the given rows; return clean records plus the count of rows
+    that were set aside as malformed."""
     records = []
     rejected = 0
     for row in rows:
@@ -154,26 +154,39 @@ def normalize_rows(rows):
     return records, rejected
 
 
-def resolve_current_state(records):
+def resolve_collisions(rows):
+    """Pick the authoritative row for each (booking_id, revision) pair.
+
+    A booking can be amended over time, so the same revision can appear
+    more than once. Within a revision, the most recently recorded row is
+    authoritative: its created_ts decides, and the event_id settles ties.
+    """
+    by_key = {}
+    for row in rows:
+        key = (row["booking_id"].strip(), row["revision"].strip())
+        prior = by_key.get(key)
+        if prior is None or row["created_ts"] > prior["created_ts"] or \
+                (row["created_ts"] == prior["created_ts"] and
+                 row["event_id"] < prior["event_id"]):
+            by_key[key] = row
+    return list(by_key.values())
+
+
+def select_effective(records):
     """Resolve each booking to the row that describes its current state.
 
-    A booking can be amended over time, so it appears under several
-    revisions. Within a revision, if more than one row was recorded, the most
-    recently recorded row is authoritative (its created_ts decides, and the
-    event_id settles ties). Voided revisions do not describe the booking's
-    current state: the effective revision is the highest non-voided one.
+    Later revisions supersede earlier ones. Voided revisions do not describe
+    the booking's current state: the effective revision is the highest
+    non-voided one.
     """
-    by_booking = defaultdict(dict)
+    by_booking = defaultdict(list)
     for record in records:
-        prior = by_booking[record["booking_id"]].get(record["revision"])
-        if prior is None or record["created_ts"] > prior["created_ts"] or \
-                (record["created_ts"] == prior["created_ts"] and
-                 record["event_id"] < prior["event_id"]):
-            by_booking[record["booking_id"]][record["revision"]] = record
+        by_booking[record["booking_id"]].append(record)
 
     current = {}
     for booking_id, revisions in by_booking.items():
-        current[booking_id] = revisions[max(revisions)]
+        revisions.sort(key=lambda rec: rec["revision"])
+        current[booking_id] = revisions[-1]
     return current
 
 
@@ -326,8 +339,9 @@ def main():
 
     rows = read_export(INPUT_PATH)
     surviving, dropped = drop_duplicate_events(rows)
-    records, rejected = normalize_rows(surviving)
-    current = resolve_current_state(records)
+    winners = resolve_collisions(surviving)
+    records, rejected = normalize_rows(winners)
+    current = select_effective(records)
     fact_rows = build_facts(current)
     overlap_days = count_overlap_days(current)
     summary = build_summary(rows, dropped, rejected, records, current,

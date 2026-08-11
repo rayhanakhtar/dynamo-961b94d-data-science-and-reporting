@@ -55,7 +55,7 @@ SUMMARY_KEYS = [
 ]
 
 # Independently audited whole-dataset total (fact_contract.md sections 15-17).
-TOTAL_BLOCKED_MINUTES = 49652
+TOTAL_BLOCKED_MINUTES = 49982
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_facts_columns_and_minutes(facts_rows):
 
 def test_facts_row_count(facts_rows):
     _header, rows = facts_rows
-    assert len(rows) == 216, "expected 216 fact rows, got %d" % len(rows)
+    assert len(rows) == 220, "expected 220 fact rows, got %d" % len(rows)
 
 
 def test_facts_unique_cells(facts_rows):
@@ -453,6 +453,53 @@ DEDUP_PRECEDENCE_CELLS = {
 @pytest.mark.parametrize("label", sorted(DEDUP_PRECEDENCE_CELLS))
 def test_dedup_precedence_cells(facts_lookup, label):
     (room, clinic, date), expected = DEDUP_PRECEDENCE_CELLS[label]
+    key = (room, clinic, date)
+    actual = facts_lookup.get(key)
+    assert actual == expected, \
+        "%s: %r = %r, expected %r" % (label, key, actual, expected)
+
+
+# ---------------------------------------------------------------------------
+# 9. Atomic semantic checks — cascading composed scenarios
+#    (fact_contract.md sections 4-12)
+# ---------------------------------------------------------------------------
+#
+# Each cell pins the DOWNSTREAM consequence of an UPSTREAM decision. These
+# scenarios make pipeline stages order-dependent: a wrong choice at one stage
+# changes which room, which days, or which union value reach the fact table.
+
+COMPOSED_CELLS = {
+    # S1 room reassignment (sections 5, 7, 11, 12): BK-2101 was amended from
+    # RM-01 to RM-02. Its rev2 has two rows: a VOIDED RM-01 row (earlier
+    # created_ts) and a BOOKED RM-02 row (later created_ts). The later-created
+    # BOOKED row wins the collision, so the effective revision lives on RM-02;
+    # the union with BK-2104 (different provider) on RM-02 is
+    # [10:00,11:30) = 90. The superseded RM-01 revision must emit nothing.
+    "room reassignment lands on new room": (("RM-02", "CL-A", "2026-02-26"), 90),
+    "superseded room emits nothing": (("RM-01", "CL-A", "2026-02-26"), None),
+    # S2 midnight amendment (sections 5, 7, 9, 10, 12): BK-2102's rev2
+    # collision winner is a VOIDED row (later created_ts), which is skipped;
+    # the effective rev1 interval [23:00, 01:00) crosses midnight, so it
+    # contributes 60 minutes on each day. On 2026-02-21 it overlaps
+    # BK-2103 [00:30, 01:30) (different provider), whose union is
+    # [00:00, 01:30) = 90.
+    "midnight amendment day 1": (("RM-01", "CL-B", "2026-02-20"), 60),
+    "midnight amendment day 2 union": (("RM-01", "CL-B", "2026-02-21"), 90),
+    # S3 re-exported revocation (sections 4, 5, 7, 16, 12): BK-2105's rev2
+    # VOIDED event was exported twice; the first copy is malformed, so the
+    # event is discarded before collision resolution (the clean second copy is
+    # a discarded duplicate). rev2 therefore resolves to the BOOKED row
+    # [10:00, 11:00); the union with BK-2106 [10:30, 11:30) is
+    # [10:00, 11:30) = 90. A keep-last/validate-before-dedup pipeline would
+    # let the VOIDED row survive and fall back to rev1 [09:00, 10:00), giving
+    # a 120-minute gap-union instead.
+    "re-exported revocation union": (("RM-01", "CL-C", "2026-02-27"), 90),
+}
+
+
+@pytest.mark.parametrize("label", sorted(COMPOSED_CELLS))
+def test_composed_cells(facts_lookup, label):
+    (room, clinic, date), expected = COMPOSED_CELLS[label]
     key = (room, clinic, date)
     actual = facts_lookup.get(key)
     assert actual == expected, \

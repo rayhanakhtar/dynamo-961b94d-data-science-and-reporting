@@ -90,6 +90,10 @@ Each revision event has exactly one status:
   every `voided` revision. The first revision encountered whose status is
   `booked` or `cancelled` is the booking's **effective revision**.
 - The booking's final state and interval come only from its effective revision.
+- The effective revision's row also fixes the booking's `clinic_id` and
+  `room_id`: the booking's blocked minutes are attributed to the effective
+  revision's `(clinic_id, room_id)`, never to a superseded revision's room or
+  clinic.
 - If every revision of a booking is `voided`, the booking has **no effective
   revision** and contributes nothing at all.
 - Consequences of these rules:

@@ -54,7 +54,8 @@ The export has exactly these 13 columns, in this order:
   the export was assembled). For each `event_id`, only the first copy in file
   order is kept; every later copy of the same `event_id` is a duplicate and is
   discarded. Each discarded copy counts toward `duplicate_events_removed`
-  (Section 18).
+  (Section 18). A row kept by this deduplication is said to **survive
+  deduplication**; a discarded copy does not.
 
 ## 5. Booking identity
 
@@ -65,8 +66,13 @@ The export has exactly these 13 columns, in this order:
 - If two or more rows carry the same `(booking_id, revision)` pair, the row with
   the latest `created_ts` is authoritative for that revision; if `created_ts`
   ties, the row with the greatest `event_id` (compared as strings) wins.
-- Collision resolution is applied before effective-revision selection; the
-  surviving row for a revision is that revision's sole content.
+- Collision resolution is applied before effective-revision selection: the
+  **authoritative row** for a revision (the row chosen above) is that
+  revision's sole content for effective-revision selection and for all
+  capacity computation. Collision resolution does not remove the losing rows
+  from the population of rows that survived deduplication (Section 4); those
+  losing rows remain eligible rows for the quality-summary counts of
+  Section 17.
 
 ## 6. Status semantics
 
@@ -208,11 +214,11 @@ copy of a duplicated event is the one validated.
 | `duplicate_events_removed` | Number of rows discarded by the `event_id` deduplication (every copy of an `event_id` beyond the first). |
 | `malformed_rows_rejected` | Number of rows, after deduplication, that fail the malformed-input rules of Section 16. |
 | `total_booking_ids` | Number of distinct `booking_id` values among the rows that survive deduplication and are not malformed. |
-| `voided_revisions` | Number of surviving, well-formed rows whose `status` is `voided`. |
+| `voided_revisions` | Number of rows that survived `event_id` deduplication (Section 4) and are not malformed (Section 16), whose normalized `status` is `voided`. This includes a `voided` row that loses a same-`(booking_id, revision)` collision (Section 5): collision resolution decides the revision's sole content for effective-revision selection but does not remove losing rows from this population. |
 | `bookings_with_effective_revision` | Number of distinct bookings (from `total_booking_ids`) that have at least one non-voided revision. |
 | `active_bookings` | Number of bookings whose effective revision has status `booked`. |
 | `cancelled_bookings` | Number of bookings whose effective revision has status `cancelled`. |
-| `bookings_with_no_effective_revision` | Number of bookings all of whose surviving revisions are `voided`. |
+| `bookings_with_no_effective_revision` | Number of bookings (from `total_booking_ids`) with no effective revision (Section 7): every authoritative revision row of the booking (Section 5) is `voided`. |
 | `multi_day_active_bookings` | Number of active bookings whose blocked minutes fall on more than one calendar day. |
 | `room_clinic_days_with_overlap` | Number of `(clinic_id, room_id, calendar_date)` combinations on which at least two active bookings blocked at least one shared minute (equivalently, combinations where the day's union minutes are strictly fewer than the sum of the individual active bookings' minutes on that day). |
 | `total_blocked_minutes` | Sum of `blocked_minutes` over every row of the output fact table. |

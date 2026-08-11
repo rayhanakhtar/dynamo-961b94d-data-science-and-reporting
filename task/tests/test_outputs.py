@@ -55,7 +55,7 @@ SUMMARY_KEYS = [
 ]
 
 # Independently audited whole-dataset total (fact_contract.md sections 15-17).
-TOTAL_BLOCKED_MINUTES = 49592
+TOTAL_BLOCKED_MINUTES = 49652
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_facts_columns_and_minutes(facts_rows):
 
 def test_facts_row_count(facts_rows):
     _header, rows = facts_rows
-    assert len(rows) == 215, "expected 215 fact rows, got %d" % len(rows)
+    assert len(rows) == 216, "expected 216 fact rows, got %d" % len(rows)
 
 
 def test_facts_unique_cells(facts_rows):
@@ -419,6 +419,40 @@ COLLISION_CELLS = {
 @pytest.mark.parametrize("label", sorted(COLLISION_CELLS))
 def test_collision_cells(facts_lookup, label):
     (room, clinic, date), expected = COLLISION_CELLS[label]
+    key = (room, clinic, date)
+    actual = facts_lookup.get(key)
+    assert actual == expected, \
+        "%s: %r = %r, expected %r" % (label, key, actual, expected)
+
+
+# ---------------------------------------------------------------------------
+# 8. Atomic semantic checks — deduplication x malformed-row precedence
+#    (fact_contract.md sections 4, 16, 8, 14)
+# ---------------------------------------------------------------------------
+#
+# These cells pin the ordering of input-cleanup rules over state resolution.
+# Section 4 keeps only the FIRST copy of each event_id in file order; every
+# later copy is a discarded duplicate and never reaches validation. Malformed
+# detection (section 16) is applied to the rows that survive deduplication, so
+# the surviving copy of a duplicated event is the one validated. The two
+# bookings below carry an event_id exported twice with conflicting copies:
+
+DEDUP_PRECEDENCE_CELLS = {
+    # BK-1801: the first copy of EV-0000914 is malformed (end 08:00 before
+    # start 09:00); the later copy is well-formed but is a duplicate and is
+    # discarded. The surviving (first) copy is malformed, so the booking has
+    # no well-formed row and contributes NOTHING: no fact row for this cell.
+    "poisoned copy dead booking": (("RM-01", "CL-B", "2026-01-18"), None),
+    # BK-1802: the first copy of EV-0000915 is well-formed [09:00, 10:00); the
+    # later copy is malformed but is a duplicate and is discarded before
+    # validation. The booking stays active: 60 blocked minutes.
+    "malformed duplicate ignored": (("RM-02", "CL-B", "2026-01-18"), 60),
+}
+
+
+@pytest.mark.parametrize("label", sorted(DEDUP_PRECEDENCE_CELLS))
+def test_dedup_precedence_cells(facts_lookup, label):
+    (room, clinic, date), expected = DEDUP_PRECEDENCE_CELLS[label]
     key = (room, clinic, date)
     actual = facts_lookup.get(key)
     assert actual == expected, \

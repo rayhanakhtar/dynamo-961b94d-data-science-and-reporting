@@ -55,7 +55,7 @@ SUMMARY_KEYS = [
 ]
 
 # Independently audited whole-dataset total (fact_contract.md sections 15-17).
-TOTAL_BLOCKED_MINUTES = 52474
+TOTAL_BLOCKED_MINUTES = 52714
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_facts_columns_and_minutes(facts_rows):
 
 def test_facts_row_count(facts_rows):
     _header, rows = facts_rows
-    assert len(rows) == 254, "expected 254 fact rows, got %d" % len(rows)
+    assert len(rows) == 258, "expected 258 fact rows, got %d" % len(rows)
 
 
 def test_facts_unique_cells(facts_rows):
@@ -767,6 +767,51 @@ def test_state_propagation_cells(facts_lookup, label):
 @pytest.mark.parametrize("label", sorted(PROVENANCE_PARTITION_CELLS))
 def test_provenance_partition_cells(facts_lookup, label):
     (room, clinic, date), expected = PROVENANCE_PARTITION_CELLS[label]
+    key = (room, clinic, date)
+    actual = facts_lookup.get(key)
+    assert actual == expected, \
+        "%s: %r = %r, expected %r" % (label, key, actual, expected)
+
+
+# ---------------------------------------------------------------------------
+# 14. Atomic semantic checks - non-contiguous revision numbering
+#     (fact_contract.md sections 5, 7, 10, 12)
+# ---------------------------------------------------------------------------
+#
+# Each cell fixes the outcome when a booking's revisions skip numbers.
+# Revision numbers need not be contiguous (section 5); the effective revision
+# is still the first non-voided revision found scanning downward by revision
+# value (section 7), and it alone fixes the booking's room, clinic, and
+# interval. The superseded revision emits nothing and the old room or day
+# carries no blocked minutes.
+
+REVISION_GAP_CELLS = {
+    # Family A, revision-gap rebooking across rooms (sections 5, 7, 12):
+    # BK-3001's revisions are 1 and 3. The effective revision is 3, which is
+    # booked on RM-06, so 60 minutes land on RM-06/CL-A 2026-04-06 and the
+    # superseded rev1 room RM-05 emits nothing.
+    "gap rebook lands on latest room": (("RM-06", "CL-A", "2026-04-06"), 60),
+    "gap rebook old room absent": (("RM-05", "CL-A", "2026-04-06"), None),
+    # Family B, revision-gap rebooking across days (sections 5, 7, 10):
+    # BK-3002's effective rev3 moves the same room's block from 2026-04-07 to
+    # 2026-04-08; the earlier date is no longer blocked.
+    "gap rebook lands on latest day": (("RM-05", "CL-B", "2026-04-08"), 60),
+    "gap rebook old day absent": (("RM-05", "CL-B", "2026-04-07"), None),
+    # Family C, contiguous-revision control (sections 5, 7): BK-3003 uses the
+    # contiguous revisions 1 and 2, so the effective rev2 moves the block to
+    # 2026-04-10 exactly as the contract requires.
+    "contiguous control latest day": (("RM-06", "CL-B", "2026-04-10"), 60),
+    "contiguous control old day absent": (("RM-06", "CL-B", "2026-04-09"), None),
+    # Family D, voided revision with a numbering gap (sections 5, 6, 7):
+    # BK-3004's rev3 is voided and therefore skipped, so the effective rev1
+    # keeps the room blocked on 2026-04-11.
+    "voided-gap control active": (("RM-05", "CL-C", "2026-04-11"), 60),
+}
+
+
+@pytest.mark.parametrize("label", sorted(REVISION_GAP_CELLS))
+def test_revision_gap_cells(facts_lookup, label):
+    (room, clinic, date), expected = REVISION_GAP_CELLS[label]
     key = (room, clinic, date)
     actual = facts_lookup.get(key)
     assert actual == expected, \

@@ -184,10 +184,9 @@ def select_effective(records, authoritative):
     current = {}
     for booking_id, revisions in by_booking.items():
         chosen = None
-        for revision in sorted({rec["revision"] for rec in revisions},
-                               reverse=True):
-            candidate = authoritative[(booking_id, revision)]
-            if candidate["status"] != "VOIDED":
+        for revision in range(len(revisions), 0, -1):
+            candidate = authoritative.get((booking_id, revision))
+            if candidate is not None and candidate["status"] != "VOIDED":
                 chosen = candidate
                 break
         current[booking_id] = chosen
@@ -280,9 +279,9 @@ def count_overlap_days(current):
     return overlap_days
 
 
-def build_summary(rows, dropped, rejected, authoritative, current, fact_rows,
+def build_summary(rows, dropped, rejected, records, current, fact_rows,
                   overlap_days):
-    voided_rows = sum(1 for rec in authoritative.values()
+    voided_rows = sum(1 for rec in records
                       if rec["status"] == "VOIDED")
     active = sum(1 for rec in current.values()
                  if rec is not None and rec["status"] == "BOOKED")
@@ -343,7 +342,7 @@ def main():
     current = select_effective(records, authoritative)
     fact_rows = build_facts(current)
     overlap_days = count_overlap_days(current)
-    summary = build_summary(rows, dropped, rejected, authoritative, current,
+    summary = build_summary(rows, dropped, rejected, records, current,
                             fact_rows, overlap_days)
 
     write_facts(FACTS_PATH, fact_rows)

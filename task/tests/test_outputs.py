@@ -978,6 +978,156 @@ def _independent_facts_lookup():
     return out
 
 
+def _normalize_row(row):
+    """Normalize one raw export row per contract sections 3 and 16; return a
+    record dict, or None if the row is malformed."""
+    if len(row) < 13:
+        return None
+    event_id = row[0].strip()
+    booking_id = row[1].strip()
+    if not event_id or not booking_id:
+        return None
+    try:
+        revision = int(row[2].strip())
+        if revision < 0:
+            return None
+    except ValueError:
+        return None
+    status = row[3].strip().upper()
+    clinic = row[4].strip().upper()
+    room = row[5].strip().upper()
+    if status not in ("BOOKED", "CANCELLED", "VOIDED") or not clinic or not room:
+        return None
+    try:
+        sd = _datetime.date.fromisoformat(row[8].strip())
+        ed = _datetime.date.fromisoformat(row[10].strip())
+        sm = _parse_clock(row[9])
+        em = _parse_clock(row[11])
+        created_ts = _datetime.datetime.strptime(row[12].strip(),
+                                                 "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+    if sm is None or em is None:
+        return None
+    start = _datetime.datetime.combine(sd, _datetime.time()) + \
+        _datetime.timedelta(minutes=sm)
+    end = _datetime.datetime.combine(ed, _datetime.time()) + \
+        _datetime.timedelta(minutes=em)
+    if end < start:
+        return None
+    return {"booking_id": booking_id, "revision": revision, "status": status,
+            "clinic_id": clinic, "room_id": room, "event_id": event_id,
+            "created_ts": created_ts, "start": start, "end": end}
+
+
+def _independent_summary():
+    """Recompute all twelve quality-summary values from the public input alone,
+    following the contract's population provenance (sections 4, 5, 7, 8, 9,
+    10, 12, 16, 17). Each metric is sourced from the exact population its
+    contract row specifies."""
+    raw_rows = []
+    if os.path.exists(DATA_INPUT):
+        with open(DATA_INPUT, encoding="utf-8", newline="") as handle:
+            reader = csv.reader(handle)
+            next(reader, None)
+            raw_rows = list(reader)
+    total_raw = len(raw_rows)
+
+    # population 1 -> 2: deduplicate by event_id (first copy in file order wins)
+    seen = set()
+    surviving = []
+    duplicates = 0
+    for row in raw_rows:
+        event_id = row[0].strip()
+        if event_id in seen:
+            duplicates += 1
+            continue
+        seen.add(event_id)
+        surviving.append(row)
+
+    # population 2 -> 3: validate the survivors
+    validated = []
+    malformed = 0
+    for row in surviving:
+        rec = _normalize_row(row)
+        if rec is None:
+            malformed += 1
+        else:
+            validated.append(rec)
+
+    # population 3 metrics
+    total_booking_ids = len({r["booking_id"] for r in validated})
+    voided_revisions = sum(1 for r in validated if r["status"] == "VOIDED")
+
+    # population 3 -> 4: collision resolution (latest created_ts, then
+    # greatest event_id as a string)
+    by_booking = _collections.defaultdict(dict)
+    for r in validated:
+        by_booking[r["booking_id"]].setdefault(r["revision"], []).append(r)
+    authoritative = {}
+    for bid, revisions in by_booking.items():
+        for rev, events in revisions.items():
+            authoritative[(bid, rev)] = max(
+                events, key=lambda e: (e["created_ts"], e["event_id"]))
+
+    # population 4 -> 5: effective revision (highest non-voided authoritative)
+    effective = {}
+    for bid, revisions in by_booking.items():
+        chosen = None
+        for rev in sorted(revisions, reverse=True):
+            cand = authoritative[(bid, rev)]
+            if cand["status"] != "VOIDED":
+                chosen = cand
+                break
+        effective[bid] = chosen
+
+    bookings_with_effective = sum(1 for e in effective.values() if e is not None)
+    active_bookings = sum(1 for e in effective.values()
+                          if e is not None and e["status"] == "BOOKED")
+    cancelled_bookings = sum(1 for e in effective.values()
+                             if e is not None and e["status"] == "CANCELLED")
+    no_effective = sum(1 for e in effective.values() if e is None)
+
+    # populations 5 -> 7 -> 8: day materialization, room-day union
+    day_timelines = _collections.defaultdict(list)
+    for rec in effective.values():
+        if rec is None or rec["status"] != "BOOKED":
+            continue
+        for day, lo, hi in _day_segments(rec):
+            day_timelines[(rec["room_id"], rec["clinic_id"], day)].append((lo, hi))
+
+    total_blocked = 0
+    overlap_days = 0
+    for iv in day_timelines.values():
+        union = _union_minutes(iv)
+        summed = sum(int((e - s).total_seconds()) // 60 for s, e in iv)
+        if union < summed:
+            overlap_days += 1
+        total_blocked += union
+
+    multi_day = 0
+    for rec in effective.values():
+        if rec is None or rec["status"] != "BOOKED":
+            continue
+        if len(_day_segments(rec)) > 1:
+            multi_day += 1
+
+    return {
+        "total_raw_events": total_raw,
+        "duplicate_events_removed": duplicates,
+        "malformed_rows_rejected": malformed,
+        "total_booking_ids": total_booking_ids,
+        "voided_revisions": voided_revisions,
+        "bookings_with_effective_revision": bookings_with_effective,
+        "active_bookings": active_bookings,
+        "cancelled_bookings": cancelled_bookings,
+        "bookings_with_no_effective_revision": no_effective,
+        "multi_day_active_bookings": multi_day,
+        "room_clinic_days_with_overlap": overlap_days,
+        "total_blocked_minutes": total_blocked,
+    }
+
+
 @pytest.fixture(scope="module")
 def independent_facts():
     return _independent_facts_lookup()
@@ -1055,3 +1205,24 @@ def test_effective_room_attribution(facts_lookup, independent_facts):
             raise AssertionError(
                 "composed family %r does not match independently-derived %r" % (
                     (room, clinic, day), minutes))
+
+
+# ---------------------------------------------------------------------------
+# 16. Independent semantic recomputation of the quality summary
+# ---------------------------------------------------------------------------
+#
+# These checks re-derive every quality-summary value from the PUBLIC input
+# alone and compare key-by-key, so the summary is verified against the
+# contract's population provenance rather than only against hidden golden
+# values or algebraic identities. Each metric is recomputed from the exact
+# population its contract row specifies (deduplicated survivors, validated
+# survivors, collision winners, effective revisions, effective-booked
+# population, and the materialized fact population).
+
+def test_summary_recomputed_independently():
+    summary, _duplicates = read_summary(SUMMARY_PATH)
+    expected = _independent_summary()
+    for key in SUMMARY_KEYS:
+        assert summary.get(key) == expected[key], \
+            "%s = %r, independently recomputed %r" % (
+                key, summary.get(key), expected[key])

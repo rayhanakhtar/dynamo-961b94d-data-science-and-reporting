@@ -55,7 +55,7 @@ SUMMARY_KEYS = [
 ]
 
 # Independently audited whole-dataset total (fact_contract.md sections 15-17).
-TOTAL_BLOCKED_MINUTES = 51663
+TOTAL_BLOCKED_MINUTES = 52474
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_facts_columns_and_minutes(facts_rows):
 
 def test_facts_row_count(facts_rows):
     _header, rows = facts_rows
-    assert len(rows) == 242, "expected 242 fact rows, got %d" % len(rows)
+    assert len(rows) == 254, "expected 254 fact rows, got %d" % len(rows)
 
 
 def test_facts_unique_cells(facts_rows):
@@ -679,9 +679,94 @@ STATE_PROPAGATION_CELLS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 13. Atomic semantic checks — provenance-partition calibration fixtures
+#     (fact_contract.md section 17)
+# ---------------------------------------------------------------------------
+# Each cell exercises the requirement that every quality-summary metric is
+# computed over its contract-defined population, and that fact-table cells
+# depend only on the final room-day union population.
+#
+PROVENANCE_PARTITION_CELLS = {
+    # Family A — validation changes collision population (sections 4, 5, 16)
+    # BK-2501: rev2 collision has a malformed row (ev 999, VOIDED [11:00,10:00),
+    # end before start) and a valid BOOKED row (ev 998, [10:00,11:00));
+    # validation removes the malformed row, so collision selects the valid
+    # BOOKED row and effective rev2 BOOKED [10:00,11:00) = 60. The later VOIDED
+    # rev3 is skipped; the superseded rev1 is not effective.
+    # BK-2502 overlaps [10:15,10:45) -> union [10:00,11:00) = 60.
+    # Wrong pipeline (collision before validation) picks the malformed row -> 0.
+    "A collision winner valid after validation": (("RM-01", "CL-A", "2026-03-28"), 60),
+    # Family B — collision loser vs validation loser provenance (sections 5, 16, 17)
+    # BK-2503: rev2 has valid BOOKED [11:00,12:00) and VOIDED [10:00,11:00)
+    # collision loser -> VOIDED counts in voided_revisions but not capacity.
+    # BK-2504: rev2 has BOOKED [11:00,12:00) and MALFORMED VOIDED [10:00,09:00)
+    # collision loser -> malformed removed before collision -> no voided count.
+    # Both yield 60 mins on RM-02/CL-B and RM-02/CL-C 2026-03-28.
+    "B1 well-formed voided collision loser": (("RM-02", "CL-B", "2026-03-28"), 60),
+    "B2 malformed voided collision loser": (("RM-02", "CL-C", "2026-03-28"), 60),
+    # Family C — effective-state provenance (sections 5, 7, 9, 10, 12)
+    # BK-2505: rev1 [23:00,00:30) multi-day, rev2 BOOKED [10:00,11:00) on RM-03,
+    # rev2 VOIDED [11:00,12:00) collision loser, rev2 BOOKED [10:00,12:00) on RM-04
+    # -> effective rev2 BOOKED on RM-04 (10:00-12:00) = 120 on 2026-03-30.
+    # Neighbor BK-2506 on RM-03 10:30-11:30 -> 60 mins.
+    # Superseded rev1 midnight interval must NOT leak into 2026-03-30 on RM-03.
+    "C effective room RM-04 not RM-03": (("RM-04", "CL-A", "2026-03-30"), 120),
+    "C neighbor effective on RM-03": (("RM-03", "CL-A", "2026-03-29"), 60),
+    "C superseded midnight no leak": (("RM-03", "CL-A", "2026-03-30"), None),
+    # Family D — cancellation vs no-effective-state distinction (sections 7, 8, 17)
+    # BK-2507: rev2 CANCELLED -> cancelled_bookings, not active, no fact row.
+    # BK-2508: all VOIDED -> no_eff_revision, no fact row.
+    # BK-2509: rev2 malformed [10:00,09:00) removed -> effective rev1 BOOKED [09:00,10:00).
+    # BK-2510: rev2 VOIDED -> effective rev1 BOOKED [09:00,10:00).
+    "D cancelled no fact": (("RM-01", "CL-A", "2026-03-29"), None),
+    "D all-voided no fact": (("RM-01", "CL-B", "2026-03-29"), None),
+    "D malformed-latest -> earlier active": (("RM-01", "CL-C", "2026-03-29"), 60),
+    "D VOIDED-latest -> earlier active": (("RM-02", "CL-A", "2026-03-29"), 60),
+    # Family E — materialization provenance (sections 7, 10, 11, 12)
+    # BK-2511: rev2 BOOKED [23:00,00:00) 60 mins on 2026-03-30; rev3 VOIDED skipped.
+    # Neighbor BK-2512 on RM-03 [00:15,00:45) = 30 mins on 2026-03-31.
+    # Union on RM-03 CL-B 2026-03-30 = 60; 2026-03-31 = 30.
+    "E effective midnight interval": (("RM-03", "CL-B", "2026-03-30"), 60),
+    "E neighbor same room next day": (("RM-03", "CL-B", "2026-03-31"), 30),
+    # Family F — summary-only population trap (sections 16, 17)
+    # BK-2514: rev1 BOOKED [09:00,10:00) is effective; rev2 has a malformed
+    # BOOKED row (dropped at validation) and a VOIDED row, so rev2 is VOIDED
+    # and contributes nothing -> 60 on RM-01 CL-B 2026-03-30.
+    # BK-2515: rev1 has a malformed BOOKED row (dropped) and a VOIDED row;
+    # with the malformed row gone, the sole authoritative rev1 row is VOIDED,
+    # so the booking has no effective revision. Fact table empty; but
+    # voided_revisions counts the valid VOIDED row.
+    "F malformed BOOKED latest -> rev1 active": (("RM-01", "CL-B", "2026-03-30"), 60),
+    "F all-voided no fact": (("RM-02", "CL-B", "2026-03-30"), None),
+    # Family G — cross-provider effective-state union (sections 7, 11, 12)
+    # RM-04 CL-A 2026-03-31: BK-2516 [10:00,12:00), BK-2517 [10:30,11:30), BK-2518 [12:00,13:00)
+    # all active effective -> union [10:00,13:00) = 180 mins.
+    "G cross-provider union on RM-04": (("RM-04", "CL-A", "2026-03-31"), 180),
+    # Family H — multi-day boundary / provenance interaction (sections 10, 12, 16)
+    # BK-2519: rev1 BOOKED [23:00,00:30) on RM-01 CL-C (multi-day).
+    # rev2 BOOKED [23:59:30,00:00) on RM-02 CL-C (single-day, 30 sec -> 1 min).
+    # rev3 VOIDED skipped.
+    # Effective room is RM-02 (rev2). RM-01 has no active effective.
+    # Seconds truncation: 23:59:30 -> 23:59 -> 1 min on 2026-03-30.
+    "H seconds truncation single-day": (("RM-02", "CL-C", "2026-03-30"), 1),
+    "H superseded midnight room absent": (("RM-01", "CL-C", "2026-03-30"), None),
+    "H seconds no next-day leak": (("RM-02", "CL-C", "2026-03-31"), None),
+}
+
+
 @pytest.mark.parametrize("label", sorted(STATE_PROPAGATION_CELLS))
 def test_state_propagation_cells(facts_lookup, label):
     (room, clinic, date), expected = STATE_PROPAGATION_CELLS[label]
+    key = (room, clinic, date)
+    actual = facts_lookup.get(key)
+    assert actual == expected, \
+        "%s: %r = %r, expected %r" % (label, key, actual, expected)
+
+
+@pytest.mark.parametrize("label", sorted(PROVENANCE_PARTITION_CELLS))
+def test_provenance_partition_cells(facts_lookup, label):
+    (room, clinic, date), expected = PROVENANCE_PARTITION_CELLS[label]
     key = (room, clinic, date)
     actual = facts_lookup.get(key)
     assert actual == expected, \

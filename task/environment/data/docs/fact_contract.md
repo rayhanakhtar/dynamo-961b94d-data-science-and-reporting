@@ -54,7 +54,7 @@ The export has exactly these 13 columns, in this order:
   the export was assembled). For each `event_id`, only the first copy in file
   order is kept; every later copy of the same `event_id` is a duplicate and is
   discarded. Each discarded copy counts toward `duplicate_events_removed`
-  (Section 18). A row kept by this deduplication is said to **survive
+  (Section 17). A row kept by this deduplication is said to **survive
   deduplication**; a discarded copy does not.
 
 ## 5. Booking identity
@@ -212,20 +212,59 @@ copy of a duplicated event is the one validated.
 `/app/output/quality_summary.json` is a single JSON object containing exactly
 **twelve keys**, each with an integer value. The keys appear in this order:
 
-| Key | Meaning |
-|-----|---------|
-| `total_raw_events` | Number of data rows in `/app/data/scheduling_events.csv`, including duplicates and malformed rows. |
-| `duplicate_events_removed` | Number of rows discarded by the `event_id` deduplication (every copy of an `event_id` beyond the first). |
-| `malformed_rows_rejected` | Number of rows, after deduplication, that fail the malformed-input rules of Section 16. |
-| `total_booking_ids` | Number of distinct `booking_id` values among the rows that survive deduplication and are not malformed. |
-| `voided_revisions` | Number of rows that survived `event_id` deduplication (Section 4) and are not malformed (Section 16), whose normalized `status` is `voided`. This includes a `voided` row that loses a same-`(booking_id, revision)` collision (Section 5): collision resolution decides the revision's sole content for effective-revision selection but does not remove losing rows from this population. |
-| `bookings_with_effective_revision` | Number of distinct bookings (from `total_booking_ids`) that have at least one non-voided revision. |
-| `active_bookings` | Number of bookings whose effective revision has status `booked`. |
-| `cancelled_bookings` | Number of bookings whose effective revision has status `cancelled`. |
-| `bookings_with_no_effective_revision` | Number of bookings (from `total_booking_ids`) with no effective revision (Section 7): every authoritative revision row of the booking (Section 5) is `voided`. |
-| `multi_day_active_bookings` | Number of active bookings whose blocked minutes fall on more than one calendar day. |
-| `room_clinic_days_with_overlap` | Number of `(clinic_id, room_id, calendar_date)` combinations on which at least two active bookings blocked at least one shared minute (equivalently, combinations where the day's union minutes are strictly fewer than the sum of the individual active bookings' minutes on that day). |
-| `total_blocked_minutes` | Sum of `blocked_minutes` over every row of the output fact table. |
+### Population provenance
+
+The pipeline transforms the raw export through a sequence of distinct
+populations. Each stage produces a population that is a subset of, or a
+refinement of, the previous one:
+
+1. **raw rows** — every row in `/app/data/scheduling_events.csv`.
+2. **deduplicated survivors** — raw rows minus every copy of an `event_id`
+   beyond the first (Section 4).
+3. **validated survivors** — deduplicated survivors that pass the
+   malformed-input rules of Section 16.
+4. **authoritative revision rows** — for each `(booking_id, revision)`, the
+   validated survivor selected by Section 5 collision resolution. Rows that
+   lose a collision remain in the validated population; collision resolution
+   does not remove them.
+5. **effective revisions** — per booking, the highest non-voided authoritative
+   revision row (Section 7), or none.
+6. **active effective bookings** — effective revisions whose status is
+   `booked` (Section 8).
+7. **materialized active intervals** — per-calendar-day pieces of active
+   effective bookings (Section 10).
+8. **room-day union intervals** — the per-`(clinic_id, room_id, day)` union of
+   materialized active intervals (Sections 11-12).
+
+Each quality-summary metric is computed over the population explicitly
+specified for that metric in the table below, named by the stage (or stage
+transition) that produces it. Later transformations must not retroactively
+redefine earlier population counts: a row or booking removed at one stage is
+removed for every later stage, and a row or booking retained at one stage is
+never discarded merely because a later stage does not consume it. In
+particular, collision losers, malformed rows, VOIDED revisions, effective
+revisions, and active bookings belong to distinct populations as specified
+below, and none of them is silently merged into or dropped from the population
+of another metric.
+
+| Key | Meaning | Population |
+|-----|---------|-----------|
+| `total_raw_events` | Number of data rows in `/app/data/scheduling_events.csv`, including duplicates and malformed rows. | 1. raw rows. |
+| `duplicate_events_removed` | Number of rows discarded by the `event_id` deduplication (every copy of an `event_id` beyond the first). | transition 1 to 2. |
+| `malformed_rows_rejected` | Number of rows, after deduplication, that fail the malformed-input rules of Section 16. | transition 2 to 3. |
+| `total_booking_ids` | Number of distinct `booking_id` values in the validated survivors. | 3. validated survivors. |
+| `voided_revisions` | Number of rows in the validated survivors whose normalized `status` is `voided`. This includes a `voided` row that loses a same-`(booking_id, revision)` collision (Section 5): collision resolution decides the revision's sole content for effective-revision selection but does not remove losing rows from this population. Malformed rows are removed at the transition to this population and never count. | 3. validated survivors. |
+| `bookings_with_effective_revision` | Number of distinct bookings (from `total_booking_ids`) that have at least one non-voided authoritative revision row. | 3. validated survivors. |
+| `active_bookings` | Number of bookings whose effective revision has status `booked`. | 6. active effective bookings. |
+| `cancelled_bookings` | Number of bookings whose effective revision has status `cancelled`. | 5. effective revisions. |
+| `bookings_with_no_effective_revision` | Number of bookings (from `total_booking_ids`) with no effective revision (Section 7): every authoritative revision row of the booking (Section 5) is `voided`. | 3. validated survivors. |
+| `multi_day_active_bookings` | Number of active bookings whose blocked minutes fall on more than one calendar day (Section 10). | 6. active effective bookings. |
+| `room_clinic_days_with_overlap` | Number of `(clinic_id, room_id, calendar_date)` combinations on which at least two active bookings blocked at least one shared minute (equivalently, combinations where the day's union minutes are strictly fewer than the sum of the individual active bookings' minutes on that day). | 8. room-day union intervals. |
+| `total_blocked_minutes` | Sum of `blocked_minutes` over every row of the output fact table. | 8. room-day union intervals. |
+
+A booking that never reaches the validated survivors (every surviving row is
+malformed) is not part of `total_booking_ids` and is counted by none of the
+booking-level metrics.
 
 The quality summary contains the twelve keys above and no others. The number of
 rows in the output fact table is deliberately **not** a JSON key: it is a

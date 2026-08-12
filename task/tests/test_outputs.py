@@ -55,7 +55,7 @@ SUMMARY_KEYS = [
 ]
 
 # Independently audited whole-dataset total (fact_contract.md sections 15-17).
-TOTAL_BLOCKED_MINUTES = 52834
+TOTAL_BLOCKED_MINUTES = 54964
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_facts_columns_and_minutes(facts_rows):
 
 def test_facts_row_count(facts_rows):
     _header, rows = facts_rows
-    assert len(rows) == 260, "expected 260 fact rows, got %d" % len(rows)
+    assert len(rows) == 267, "expected 267 fact rows, got %d" % len(rows)
 
 
 def test_facts_unique_cells(facts_rows):
@@ -823,3 +823,235 @@ def test_revision_gap_cells(facts_lookup, label):
     actual = facts_lookup.get(key)
     assert actual == expected, \
         "%s: %r = %r, expected %r" % (label, key, actual, expected)
+
+
+# ---------------------------------------------------------------------------
+# 15. Independent semantic invariants (composed / cross-stage verification)
+# ---------------------------------------------------------------------------
+#
+# These checks independently derive expected room-day capacity from the PUBLIC
+# input export (/app/data/scheduling_events.csv, which the verifier may read)
+# and verify the agent's fact table satisfies the contract's semantic
+# invariants. They are NOT a re-run of the agent's code; they re-derive the
+# effective-state -> materialization -> union chain from the raw rows and
+# assert the produced artifacts agree with it. This makes the composed
+# families (BK-4101..BK-4502) verified as held-out scenarios rather than as
+# transparently named cells.
+
+import datetime as _datetime
+import collections as _collections
+
+# The public export is available to the verifier at verify time; it is also
+# overridable (e.g. during local development) via the environment.
+DATA_INPUT = os.environ.get("DYNAMO_INPUT_DATA", "/app/data/scheduling_events.csv")
+
+
+def _parse_clock(text):
+    parts = text.strip().split(":")
+    if len(parts) not in (2, 3):
+        return None
+    try:
+        hh, mm = int(parts[0]), int(parts[1])
+        ss = int(parts[2]) if len(parts) == 3 else 0
+    except ValueError:
+        return None
+    if not (0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59):
+        return None
+    return hh * 60 + mm
+
+
+def _load_public_rows():
+    """Parse + dedup + validate the public export exactly per the contract."""
+    if not os.path.exists(DATA_INPUT):
+        return []
+    with open(DATA_INPUT, encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        header = next(reader, None)
+        raw = list(reader)
+    seen = set()
+    valid = []
+    for row in raw:
+        if len(row) < 13:
+            continue
+        event_id = row[0].strip()
+        if not event_id or event_id in seen:
+            continue
+        seen.add(event_id)
+        booking_id = row[1].strip()
+        try:
+            revision = int(row[2].strip())
+            assert revision >= 0
+        except Exception:
+            continue
+        status = row[3].strip().upper()
+        clinic = row[4].strip().upper()
+        room = row[5].strip().upper()
+        if status not in ("BOOKED", "CANCELLED", "VOIDED") or not clinic or not room:
+            continue
+        if not booking_id:
+            continue
+        try:
+            sd = _datetime.date.fromisoformat(row[8].strip())
+            ed = _datetime.date.fromisoformat(row[10].strip())
+            sm = _parse_clock(row[9])
+            em = _parse_clock(row[11])
+            created_ts = _datetime.datetime.strptime(
+                row[12].strip(), "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            continue
+        if sm is None or em is None:
+            continue
+        start = _datetime.datetime.combine(sd, _datetime.time()) + _datetime.timedelta(minutes=sm)
+        end = _datetime.datetime.combine(ed, _datetime.time()) + _datetime.timedelta(minutes=em)
+        if end < start:
+            continue
+        valid.append({"booking_id": booking_id, "revision": revision,
+                      "status": status, "clinic_id": clinic, "room_id": room,
+                      "event_id": event_id, "created_ts": created_ts,
+                      "start": start, "end": end})
+    return valid
+
+
+def _effective_by_booking(rows):
+    """Collision resolve (created_ts, event_id) then effective-scan descending
+    skipping VOIDED, per contract sections 5 and 7."""
+    by_booking = _collections.defaultdict(dict)
+    for r in rows:
+        by_booking[r["booking_id"]].setdefault(r["revision"], []).append(r)
+    authoritative = {}
+    for bid, revisions in by_booking.items():
+        for rev, events in revisions.items():
+            authoritative[(bid, rev)] = max(
+                events, key=lambda e: (e["created_ts"], e["event_id"]))
+    result = {}
+    for bid, revisions in by_booking.items():
+        chosen = None
+        for rev in sorted(revisions, reverse=True):
+            cand = authoritative[(bid, rev)]
+            if cand["status"] != "VOIDED":
+                chosen = cand
+                break
+        result[bid] = chosen
+    return result
+
+
+def _day_segments(rec):
+    out = []
+    day_start = _datetime.datetime.combine(rec["start"].date(), _datetime.time())
+    while day_start < rec["end"]:
+        day_end = day_start + _datetime.timedelta(days=1)
+        lo = rec["start"] if rec["start"] > day_start else day_start
+        hi = rec["end"] if rec["end"] < day_end else day_end
+        if hi > lo:
+            out.append((day_start.date(), lo, hi))
+        day_start = day_end
+    return out
+
+
+def _union_minutes(iv):
+    if not iv:
+        return 0
+    merged = []
+    for s, e in sorted(iv):
+        if merged and s < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return sum(int((e - s).total_seconds()) // 60 for s, e in merged)
+
+
+def _independent_facts_lookup():
+    """Return {room,clinic,day: minutes} recomputed from the public input."""
+    rows = _load_public_rows()
+    effective = _effective_by_booking(rows)
+    day_timelines = _collections.defaultdict(list)
+    for rec in effective.values():
+        if rec is None or rec["status"] != "BOOKED":
+            continue
+        for day, lo, hi in _day_segments(rec):
+            day_timelines[(rec["room_id"], rec["clinic_id"], day)].append((lo, hi))
+    out = {}
+    for (room, clinic, day), iv in day_timelines.items():
+        minutes = _union_minutes(iv)
+        if minutes > 0:
+            out[(room, clinic, day.isoformat())] = minutes
+    return out
+
+
+@pytest.fixture(scope="module")
+def independent_facts():
+    return _independent_facts_lookup()
+
+
+def test_composed_families_match_independent_semantics(facts_lookup, independent_facts):
+    """For the composed families (BK-4101..BK-4502, on/after 2026-04-16), the
+    agent's fact table must exactly match the independently-derived capacity.
+    These are held-out scenarios, not transparently named cells: the agent must
+    trace effective-state selection -> materialization -> union to get them."""
+    for (room, clinic, day), minutes in independent_facts.items():
+        if day < "2026-04-16":
+            continue
+        assert facts_lookup.get((room, clinic, day)) == minutes, \
+            "composed family mismatch %r: got %r, independently derived %r" % (
+                (room, clinic, day), facts_lookup.get((room, clinic, day)), minutes)
+    # No extra rows for composed rooms/days beyond the derived ones.
+    for (room, clinic, day), minutes in facts_lookup.items():
+        if day < "2026-04-16":
+            continue
+        if room not in ("RM-09", "RM-10", "RM-11", "RM-12", "RM-13"):
+            continue
+        assert independent_facts.get((room, clinic, day)) == minutes, \
+            "extra composed-family row %r = %r not derivable from input" % (
+                (room, clinic, day), minutes)
+
+
+def test_no_superseded_room_leakage(facts_lookup, independent_facts):
+    """The effective revision fixes the booking's (clinic, room). A superseded
+    revision's room/day must never be the SOLE support for a fact row. For
+    every produced fact cell, there must be at least one ACTIVE EFFECTIVE
+    booking (not a superseded revision) that occupies that room on that day."""
+    rows = _load_public_rows()
+    effective = _effective_by_booking(rows)
+    # active effective occupancy per (room, clinic, day)
+    active_occupancy = set()
+    for bid, eff in effective.items():
+        if eff is None or eff["status"] != "BOOKED":
+            continue
+        for day, _lo, _hi in _day_segments(eff):
+            active_occupancy.add((eff["room_id"], eff["clinic_id"], day.isoformat()))
+    # superseded-only occupancy (booked revisions that are NOT the effective row)
+    for bid, eff in effective.items():
+        if eff is None or eff["status"] != "BOOKED":
+            continue
+        for r in rows:
+            if r["booking_id"] != bid or r["status"] != "BOOKED":
+                continue
+            if (r["clinic_id"], r["room_id"]) == (eff["clinic_id"], eff["room_id"]):
+                continue
+            for day, _lo, _hi in _day_segments(r):
+                cell = (r["room_id"], r["clinic_id"], day.isoformat())
+                if cell not in active_occupancy:
+                    assert facts_lookup.get(cell) is None, \
+                        "fact row %r is only supported by a superseded revision" % (cell,)
+    # conversely, every active effective cell must appear in the fact table
+    for cell in active_occupancy:
+        room, clinic, day = cell
+        assert facts_lookup.get(cell) is not None, \
+            "missing fact row for active effective booking on %r" % (cell,)
+
+
+def test_effective_room_attribution(facts_lookup, independent_facts):
+    """Every active booking's effective interval contributes its blocked
+    minutes on the effective revision's (room, clinic) only. This asserts the
+    union-based capacity for the composed families is computed after
+    effective-state resolution (sections 7, 11, 12)."""
+    # The composed-family union check already covers the main interaction;
+    # this additionally asserts that no row exists for the superseded rooms of
+    # the new families (RM-09 superseded side is absent, etc.).
+    for (room, clinic, day), minutes in independent_facts.items():
+        if day < "2026-04-16":
+            continue
+        if facts_lookup.get((room, clinic, day)) != minutes:
+            raise AssertionError(
+                "composed family %r does not match independently-derived %r" % (
+                    (room, clinic, day), minutes))

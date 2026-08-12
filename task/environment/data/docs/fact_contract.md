@@ -86,9 +86,10 @@ Each revision event has exactly one status:
 
 ## 7. Effective revision
 
-- Scan a booking's revisions in descending order of `revision` value, skipping
-  every `voided` revision. The first revision encountered whose status is
-  `booked` or `cancelled` is the booking's **effective revision**.
+- A booking's **effective revision** is the highest-numbered revision whose
+  authoritative content is not `voided`. A `voided` revision never provides the
+  booking's final status, room, clinic, or interval, wherever it appears in the
+  revision order.
 - The booking's final state and interval come only from its effective revision.
 - The effective revision's row also fixes the booking's `clinic_id` and
   `room_id`: the booking's blocked minutes are attributed to the effective
@@ -96,13 +97,8 @@ Each revision event has exactly one status:
   clinic.
 - If every revision of a booking is `voided`, the booking has **no effective
   revision** and contributes nothing at all.
-- Consequences of these rules:
-  - A `voided` revision never provides the booking's final status, room, clinic,
-    or interval.
-  - If the highest-numbered revision is `voided`, the booking is governed by
-    the highest-numbered revision that is not `voided`.
-  - A `cancelled` effective revision remains non-active unless a later revision
-    becomes effective.
+- A `cancelled` effective revision remains non-active unless a later revision
+  becomes effective.
 
 ## 8. Active bookings
 
@@ -127,9 +123,7 @@ Each revision event has exactly one status:
 - A minute belongs to the calendar day in which it starts. Minute `00:00` of a
   day is that day's first minute.
 - The blocked minutes contributed by one booking on one calendar day `D` is the
-  count of minutes `m` that are inside the booking's interval and inside day `D`
-  (that is, the length of the intersection of the booking's interval with the
-  day, measured in minutes).
+  count of minutes `m` that are inside the booking's interval and inside day `D`.
 - Multi-day intervals therefore spread naturally across days: minutes after
   midnight belong to the new day. A day with zero blocked minutes from a
   booking contributes nothing for that booking.

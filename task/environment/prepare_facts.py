@@ -2,7 +2,7 @@
 """
 Daily room capacity facts.
 
-Reads the ambulatory scheduling / exam-room reservation export and reports,
+Reads the ambulatory scheduling / exam-room reservation event export and reports,
 for every clinic room and calendar day, how many minutes the room is blocked
 by scheduled appointments, along with a short quality summary of the export.
 
@@ -194,7 +194,11 @@ def select_effective(records, authoritative):
 
 
 def select_materialized(current, authoritative):
-    """Select the rows that feed room-day materialization."""
+    """Select the rows that feed room-day materialization.
+
+    The effective revision of a booking is its current state; a booking whose
+    effective revision is booked contributes that interval.
+    """
     latest_by_booking = {}
     booked_by_booking = defaultdict(list)
     for (booking_id, revision), record in authoritative.items():
@@ -206,28 +210,26 @@ def select_materialized(current, authoritative):
 
     materialized = {}
     for booking_id, effective in current.items():
-        if effective is None:
+        if effective is None or effective["status"] != "BOOKED":
             materialized[booking_id] = None
-            continue
-        if effective["status"] == "BOOKED":
-            materialized[booking_id] = effective
             continue
 
         latest = latest_by_booking.get(booking_id)
-        if latest is not None and latest["status"] == "VOIDED" and \
-                booked_by_booking[booking_id]:
-            fallback = max(booked_by_booking[booking_id],
-                           key=lambda rec: rec["revision"])
-            if (fallback["clinic_id"], fallback["room_id"], fallback["start"],
-                    fallback["end"]) != (effective["clinic_id"],
-                                          effective["room_id"],
-                                          effective["start"],
-                                          effective["end"]):
-                materialized[booking_id] = fallback
+        if latest is None or latest["status"] != "VOIDED":
+            materialized[booking_id] = effective
+            continue
+
+        materialized[booking_id] = effective
+        for record in booked_by_booking[booking_id]:
+            if record is effective:
                 continue
-            materialized[booking_id] = None
-        else:
-            materialized[booking_id] = None
+            if (record["room_id"], record["clinic_id"]) != \
+                    (effective["room_id"], effective["clinic_id"]):
+                continue
+            if record["start"] < effective["start"] or \
+                    record["end"] > effective["end"]:
+                materialized[("sup", booking_id, record["revision"])] = record
+
     return materialized
 
 
@@ -326,6 +328,7 @@ def build_summary(rows, dropped, rejected, records, authoritative, current, fact
     cancelled = sum(1 for rec in current.values()
                     if rec is not None and rec["status"] == "CANCELLED")
     no_effective = sum(1 for rec in current.values() if rec is None)
+
     latest_booked = {}
     for rec in authoritative.values():
         if rec["status"] != "BOOKED":
@@ -387,7 +390,7 @@ def main():
     fact_rows = build_facts(materialized)
     overlap_days = count_overlap_days(materialized)
     summary = build_summary(rows, dropped, rejected, records, authoritative, current,
-                             fact_rows, overlap_days)
+                            fact_rows, overlap_days)
 
     write_facts(FACTS_PATH, fact_rows)
     write_summary(SUMMARY_PATH, summary)

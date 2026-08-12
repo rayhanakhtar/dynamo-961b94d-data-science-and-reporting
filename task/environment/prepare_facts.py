@@ -50,8 +50,8 @@ SUMMARY_KEYS = [
 def parse_clock(value):
     """Parse an HH:MM or HH:MM:SS wall-clock time into minutes since midnight.
 
-    Seconds, when present, are dropped: a booking occupies the whole minute
-    in which it starts.
+    Seconds, when present, are truncated (floored) to the minute: a booking
+    occupies the whole minute in which it starts.
     """
     parts = value.split(":")
     if len(parts) not in (2, 3):
@@ -61,10 +61,7 @@ def parse_clock(value):
     seconds = int(parts[2]) if len(parts) == 3 else 0
     if not (0 <= hours <= 23 and 0 <= minutes <= 59 and 0 <= seconds <= 59):
         raise ValueError(value)
-    minutes_of_day = hours * 60 + minutes
-    if seconds:
-        minutes_of_day += 1
-    return minutes_of_day
+    return hours * 60 + minutes
 
 
 def read_export(path):
@@ -112,7 +109,7 @@ def normalize_row(row):
         start_date = datetime.date.fromisoformat(row["start_date"].strip())
         end_date = datetime.date.fromisoformat(row["end_date"].strip())
         start_minute = parse_clock(row["start_time"])
-        end_minute = parse_clock(row["end_time"]) + 1
+        end_minute = parse_clock(row["end_time"])
         created_ts = row["created_ts"].strip()
         datetime.datetime.strptime(created_ts, "%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError, IndexError):
@@ -154,39 +151,46 @@ def normalize_rows(rows):
     return records, rejected
 
 
-def resolve_collisions(rows):
+def resolve_collisions(records):
     """Pick the authoritative row for each (booking_id, revision) pair.
 
-    A booking can be amended over time, so the same revision can appear
-    more than once. Within a revision, the most recently recorded row is
-    authoritative: its created_ts decides, and the event_id settles ties.
+    A booking can be amended over time, so the same revision can appear more
+    than once. Within a revision, the most recently recorded row is
+    authoritative: the latest created_ts decides, and the greatest event_id
+    (compared as a string) settles ties.
     """
     by_key = {}
-    for row in rows:
-        key = (row["booking_id"].strip(), row["revision"].strip())
+    for rec in records:
+        key = (rec["booking_id"], rec["revision"])
         prior = by_key.get(key)
-        if prior is None or row["created_ts"] > prior["created_ts"] or \
-                (row["created_ts"] == prior["created_ts"] and
-                 row["event_id"] < prior["event_id"]):
-            by_key[key] = row
-    return list(by_key.values())
+        if prior is None or (rec["created_ts"], rec["event_id"]) > \
+                (prior["created_ts"], prior["event_id"]):
+            by_key[key] = rec
+    return by_key
 
 
-def select_effective(records):
+def select_effective(records, authoritative):
     """Resolve each booking to the row that describes its current state.
 
-    Later revisions supersede earlier ones. Voided revisions do not describe
-    the booking's current state: the effective revision is the highest
-    non-voided one.
+    Revisions are scanned from highest to lowest, skipping every voided
+    revision; the first row whose status is booked or cancelled governs the
+    booking. A booking with no such revision has no effective revision and is
+    mapped to None.
     """
     by_booking = defaultdict(list)
-    for record in records:
-        by_booking[record["booking_id"]].append(record)
+    for rec in records:
+        by_booking[rec["booking_id"]].append(rec)
 
     current = {}
     for booking_id, revisions in by_booking.items():
-        revisions.sort(key=lambda rec: rec["revision"])
-        current[booking_id] = revisions[-1]
+        chosen = None
+        for revision in sorted({rec["revision"] for rec in revisions},
+                               reverse=True):
+            candidate = authoritative[(booking_id, revision)]
+            if candidate["status"] != "VOIDED":
+                chosen = candidate
+                break
+        current[booking_id] = chosen
     return current
 
 
@@ -212,10 +216,10 @@ def interval_minutes(start, end):
 
 
 def merge_intervals(intervals):
-    """Merge intervals so that the result is their union."""
+    """Merge overlapping intervals into a union of disjoint blocks."""
     merged = []
     for start, end in sorted(intervals):
-        if merged and start == merged[-1][1]:
+        if merged and start < merged[-1][1]:
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         else:
             merged.append((start, end))
@@ -236,27 +240,21 @@ def build_facts(current):
     never the sum of separately scheduled slots. Days with no occupied time
     are not emitted.
     """
-    provider_timelines = defaultdict(list)
+    day_timelines = defaultdict(list)
     for record in current.values():
-        if record["status"] != "BOOKED":
+        if record is None or record["status"] != "BOOKED":
             continue
         for day, lo, hi in day_segments(record):
-            key = (record["room_id"], record["clinic_id"],
-                   record["provider_id"], day)
-            provider_timelines[key].append((lo, hi))
+            key = (record["room_id"], record["clinic_id"], day)
+            day_timelines[key].append((lo, hi))
 
-    facts = defaultdict(int)
-    for (room_id, clinic_id, _provider_id, day), intervals in \
-            provider_timelines.items():
-        minutes = sum(interval_minutes(lo, hi)
-                      for lo, hi in merge_intervals(intervals))
-        facts[(room_id, clinic_id, day)] += minutes
+    facts = []
+    for (room_id, clinic_id, day), intervals in day_timelines.items():
+        minutes = union_minutes(intervals)
+        if minutes > 0:
+            facts.append((room_id, clinic_id, day, minutes))
 
-    return sorted(
-        (room_id, clinic_id, day, minutes)
-        for (room_id, clinic_id, day), minutes in facts.items()
-        if minutes > 0
-    )
+    return sorted(facts, key=lambda row: (row[0], row[1], row[2].isoformat()))
 
 
 def count_overlap_days(current):
@@ -268,7 +266,7 @@ def count_overlap_days(current):
     """
     day_timelines = defaultdict(list)
     for record in current.values():
-        if record["status"] != "BOOKED":
+        if record is None or record["status"] != "BOOKED":
             continue
         for day, lo, hi in day_segments(record):
             day_timelines[(record["room_id"], record["clinic_id"],
@@ -276,23 +274,24 @@ def count_overlap_days(current):
 
     overlap_days = 0
     for intervals in day_timelines.values():
-        if union_minutes(intervals) <= \
+        if union_minutes(intervals) < \
                 sum(interval_minutes(lo, hi) for lo, hi in intervals):
             overlap_days += 1
     return overlap_days
 
 
-def build_summary(rows, dropped, rejected, records, current, fact_rows,
+def build_summary(rows, dropped, rejected, authoritative, current, fact_rows,
                   overlap_days):
-    voided_rows = sum(1 for rec in records if rec["status"] == "VOIDED")
-    active = sum(1 for rec in current.values() if rec["status"] == "BOOKED")
+    voided_rows = sum(1 for rec in authoritative.values()
+                      if rec["status"] == "VOIDED")
+    active = sum(1 for rec in current.values()
+                 if rec is not None and rec["status"] == "BOOKED")
     cancelled = sum(1 for rec in current.values()
-                    if rec["status"] == "CANCELLED")
-    dropped_bookings = sum(1 for rec in current.values()
-                           if rec["status"] == "VOIDED")
+                    if rec is not None and rec["status"] == "CANCELLED")
+    no_effective = sum(1 for rec in current.values() if rec is None)
     multi_day = 0
     for rec in current.values():
-        if rec["status"] != "BOOKED":
+        if rec is None or rec["status"] != "BOOKED":
             continue
         days = {day for day, _lo, _hi in day_segments(rec)}
         if len(days) > 1:
@@ -304,10 +303,10 @@ def build_summary(rows, dropped, rejected, records, current, fact_rows,
         "malformed_rows_rejected": rejected,
         "total_booking_ids": len(current),
         "voided_revisions": voided_rows,
-        "bookings_with_effective_revision": len(current) - dropped_bookings,
+        "bookings_with_effective_revision": len(current) - no_effective,
         "active_bookings": active,
         "cancelled_bookings": cancelled,
-        "bookings_with_no_effective_revision": dropped_bookings,
+        "bookings_with_no_effective_revision": no_effective,
         "multi_day_active_bookings": multi_day,
         "room_clinic_days_with_overlap": overlap_days,
         "total_blocked_minutes": sum(minutes
@@ -339,12 +338,12 @@ def main():
 
     rows = read_export(INPUT_PATH)
     surviving, dropped = drop_duplicate_events(rows)
-    winners = resolve_collisions(surviving)
-    records, rejected = normalize_rows(winners)
-    current = select_effective(records)
+    records, rejected = normalize_rows(surviving)
+    authoritative = resolve_collisions(records)
+    current = select_effective(records, authoritative)
     fact_rows = build_facts(current)
     overlap_days = count_overlap_days(current)
-    summary = build_summary(rows, dropped, rejected, records, current,
+    summary = build_summary(rows, dropped, rejected, authoritative, current,
                             fact_rows, overlap_days)
 
     write_facts(FACTS_PATH, fact_rows)

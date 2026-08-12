@@ -97,15 +97,12 @@ Each revision event has exactly one status:
 - If every revision of a booking is `voided`, the booking has **no effective
   revision** and contributes nothing at all.
 - Consequences of these rules:
-  - A `voided` revision is skipped wherever it appears in the revision order,
-    even if it is the highest-numbered revision; it never provides the
-    booking's interval or status.
-  - A booking whose highest-numbered revision is `voided` is governed by the
-    highest-numbered revision that is not `voided` (typically the previous
-    revision).
-  - A `cancelled` effective revision is never undone by an earlier revision;
-    only a later revision can change the booking's state (for example, a
-    re-booking).
+  - A `voided` revision never provides the booking's final status, room, clinic,
+    or interval.
+  - If the highest-numbered revision is `voided`, the booking is governed by
+    the highest-numbered revision that is not `voided`.
+  - A `cancelled` effective revision remains non-active unless a later revision
+    becomes effective.
 
 ## 8. Active bookings
 
@@ -238,14 +235,8 @@ refinement of, the previous one:
 
 Each quality-summary metric is computed over the population explicitly
 specified for that metric in the table below, named by the stage (or stage
-transition) that produces it. Later transformations must not retroactively
-redefine earlier population counts: a row or booking removed at one stage is
-removed for every later stage, and a row or booking retained at one stage is
-never discarded merely because a later stage does not consume it. In
-particular, collision losers, malformed rows, VOIDED revisions, effective
-revisions, and active bookings belong to distinct populations as specified
-below, and none of them is silently merged into or dropped from the population
-of another metric.
+transition) that produces it. Later transformations do not redefine earlier
+population counts: each metric uses only its stated population.
 
 | Key | Meaning | Population |
 |-----|---------|-----------|
@@ -253,7 +244,7 @@ of another metric.
 | `duplicate_events_removed` | Number of rows discarded by the `event_id` deduplication (every copy of an `event_id` beyond the first). | transition 1 to 2. |
 | `malformed_rows_rejected` | Number of rows, after deduplication, that fail the malformed-input rules of Section 16. | transition 2 to 3. |
 | `total_booking_ids` | Number of distinct `booking_id` values in the validated survivors. | 3. validated survivors. |
-| `voided_revisions` | Number of rows in the validated survivors whose normalized `status` is `voided`. This includes a `voided` row that loses a same-`(booking_id, revision)` collision (Section 5): collision resolution decides the revision's sole content for effective-revision selection but does not remove losing rows from this population. Malformed rows are removed at the transition to this population and never count. | 3. validated survivors. |
+| `voided_revisions` | Number of rows in the validated survivors whose normalized `status` is `voided`. Collision losers remain in this population; malformed rows do not. | 3. validated survivors. |
 | `bookings_with_effective_revision` | Number of distinct bookings (from `total_booking_ids`) that have at least one non-voided authoritative revision row. | 3. validated survivors. |
 | `active_bookings` | Number of bookings whose effective revision has status `booked`. | 6. active effective bookings. |
 | `cancelled_bookings` | Number of bookings whose effective revision has status `cancelled`. | 5. effective revisions. |

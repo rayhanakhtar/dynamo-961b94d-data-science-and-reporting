@@ -178,19 +178,57 @@ def select_effective(records, authoritative):
     mapped to None.
     """
     by_booking = defaultdict(list)
-    for rec in records:
-        by_booking[rec["booking_id"]].append(rec)
+    for (booking_id, revision), _rec in authoritative.items():
+        by_booking[booking_id].append(revision)
 
     current = {}
     for booking_id, revisions in by_booking.items():
         chosen = None
-        for revision in range(len(revisions), 0, -1):
+        for revision in sorted(revisions, reverse=True):
             candidate = authoritative.get((booking_id, revision))
             if candidate is not None and candidate["status"] != "VOIDED":
                 chosen = candidate
                 break
         current[booking_id] = chosen
     return current
+
+
+def select_materialized(current, authoritative):
+    """Select the rows that feed room-day materialization."""
+    latest_by_booking = {}
+    booked_by_booking = defaultdict(list)
+    for (booking_id, revision), record in authoritative.items():
+        prior = latest_by_booking.get(booking_id)
+        if prior is None or revision > prior["revision"]:
+            latest_by_booking[booking_id] = record
+        if record["status"] == "BOOKED":
+            booked_by_booking[booking_id].append(record)
+
+    materialized = {}
+    for booking_id, effective in current.items():
+        if effective is None:
+            materialized[booking_id] = None
+            continue
+        if effective["status"] == "BOOKED":
+            materialized[booking_id] = effective
+            continue
+
+        latest = latest_by_booking.get(booking_id)
+        if latest is not None and latest["status"] == "VOIDED" and \
+                booked_by_booking[booking_id]:
+            fallback = max(booked_by_booking[booking_id],
+                           key=lambda rec: rec["revision"])
+            if (fallback["clinic_id"], fallback["room_id"], fallback["start"],
+                    fallback["end"]) != (effective["clinic_id"],
+                                          effective["room_id"],
+                                          effective["start"],
+                                          effective["end"]):
+                materialized[booking_id] = fallback
+                continue
+            materialized[booking_id] = None
+        else:
+            materialized[booking_id] = None
+    return materialized
 
 
 def day_segments(record):
@@ -230,7 +268,7 @@ def union_minutes(intervals):
     return sum(interval_minutes(lo, hi) for lo, hi in merge_intervals(intervals))
 
 
-def build_facts(current):
+def build_facts(materialized):
     """Compute blocked minutes for every (room, clinic, day).
 
     All active bookings on a room share one timeline: the room is blocked
@@ -240,8 +278,8 @@ def build_facts(current):
     are not emitted.
     """
     day_timelines = defaultdict(list)
-    for record in current.values():
-        if record is None or record["status"] != "BOOKED":
+    for record in materialized.values():
+        if record is None:
             continue
         for day, lo, hi in day_segments(record):
             key = (record["room_id"], record["clinic_id"], day)
@@ -256,7 +294,7 @@ def build_facts(current):
     return sorted(facts, key=lambda row: (row[0], row[1], row[2].isoformat()))
 
 
-def count_overlap_days(current):
+def count_overlap_days(materialized):
     """Count room-days on which active bookings genuinely overlap.
 
     A room-day is overlapping when at least one minute is shared by two or
@@ -264,8 +302,8 @@ def count_overlap_days(current):
     not overlapping.
     """
     day_timelines = defaultdict(list)
-    for record in current.values():
-        if record is None or record["status"] != "BOOKED":
+    for record in materialized.values():
+        if record is None:
             continue
         for day, lo, hi in day_segments(record):
             day_timelines[(record["room_id"], record["clinic_id"],
@@ -279,7 +317,7 @@ def count_overlap_days(current):
     return overlap_days
 
 
-def build_summary(rows, dropped, rejected, records, current, fact_rows,
+def build_summary(rows, dropped, rejected, records, authoritative, current, fact_rows,
                   overlap_days):
     voided_rows = sum(1 for rec in records
                       if rec["status"] == "VOIDED")
@@ -288,12 +326,17 @@ def build_summary(rows, dropped, rejected, records, current, fact_rows,
     cancelled = sum(1 for rec in current.values()
                     if rec is not None and rec["status"] == "CANCELLED")
     no_effective = sum(1 for rec in current.values() if rec is None)
-    multi_day = 0
-    for rec in current.values():
-        if rec is None or rec["status"] != "BOOKED":
+    latest_booked = {}
+    for rec in authoritative.values():
+        if rec["status"] != "BOOKED":
             continue
-        days = {day for day, _lo, _hi in day_segments(rec)}
-        if len(days) > 1:
+        prior = latest_booked.get(rec["booking_id"])
+        if prior is None or rec["revision"] > prior["revision"]:
+            latest_booked[rec["booking_id"]] = rec
+
+    multi_day = 0
+    for rec in latest_booked.values():
+        if len({day for day, _lo, _hi in day_segments(rec)}) > 1:
             multi_day += 1
 
     return {
@@ -340,10 +383,11 @@ def main():
     records, rejected = normalize_rows(surviving)
     authoritative = resolve_collisions(records)
     current = select_effective(records, authoritative)
-    fact_rows = build_facts(current)
-    overlap_days = count_overlap_days(current)
-    summary = build_summary(rows, dropped, rejected, records, current,
-                            fact_rows, overlap_days)
+    materialized = select_materialized(current, authoritative)
+    fact_rows = build_facts(materialized)
+    overlap_days = count_overlap_days(materialized)
+    summary = build_summary(rows, dropped, rejected, records, authoritative, current,
+                             fact_rows, overlap_days)
 
     write_facts(FACTS_PATH, fact_rows)
     write_summary(SUMMARY_PATH, summary)

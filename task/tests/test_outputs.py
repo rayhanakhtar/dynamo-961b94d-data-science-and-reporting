@@ -55,7 +55,7 @@ SUMMARY_KEYS = [
 ]
 
 # Independently audited whole-dataset total (fact_contract.md sections 15-17).
-TOTAL_BLOCKED_MINUTES = 52714
+TOTAL_BLOCKED_MINUTES = 52834
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_facts_columns_and_minutes(facts_rows):
 
 def test_facts_row_count(facts_rows):
     _header, rows = facts_rows
-    assert len(rows) == 258, "expected 258 fact rows, got %d" % len(rows)
+    assert len(rows) == 260, "expected 260 fact rows, got %d" % len(rows)
 
 
 def test_facts_unique_cells(facts_rows):
@@ -806,6 +806,13 @@ REVISION_GAP_CELLS = {
     # BK-3004's rev3 is voided and therefore skipped, so the effective rev1
     # keeps the room blocked on 2026-04-11.
     "voided-gap control active": (("RM-05", "CL-C", "2026-04-11"), 60),
+    # Phase 21 Family A: the booking's effective state is cancelled even though
+    # its latest revision is voided; the cancelled state contributes nothing, so
+    # only the neighbor [10:30,11:30) remains.
+    "phase21 cancelled effective emits nothing": (("RM-07", "CL-A", "2026-04-12"), 60),
+    # Phase 21 Family C: the cancelled booking's old day contributes nothing.
+    "phase21 composed cancelled day absent": (("RM-08", "CL-A", "2026-04-14"), None),
+    "phase21 composed survivor day": (("RM-08", "CL-A", "2026-04-15"), 60),
 }
 
 

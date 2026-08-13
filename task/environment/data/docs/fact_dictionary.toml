@@ -10,7 +10,7 @@
 
 [meta]
 contract = "fact_contract.md"
-dictionary_version = "26A"
+dictionary_version = "26N"
 
 # ---------------------------------------------------------------------------
 # Input sources
@@ -70,6 +70,17 @@ malformed_detection_after_dedup = true
 malformed_rules_uniform_across_sources = true
 
 # ---------------------------------------------------------------------------
+# Terminology (fact_contract.md section 3.1)
+# ---------------------------------------------------------------------------
+
+[terminology]
+deduplication_survivor = "row retained by the event_id first-occurrence rule (section 4)"
+validated_surviving_row = "deduplication survivor that passes the malformed-input rules of section 16"
+authoritative_collision_winner = "single validated surviving row selected per (booking_id, revision) by latest created_ts then greatest event_id (section 5)"
+collision_losers_remain_validated_survivors = true
+effective_revision = "highest-numbered authoritative collision winner whose status is not VOIDED (section 7)"
+
+# ---------------------------------------------------------------------------
 # Event identity / dedup
 # ---------------------------------------------------------------------------
 
@@ -120,7 +131,7 @@ collision_tie_break = "greatest event_id compared as strings"
 collision_includes_voided = true
 
 [precedence.effective_revision]
-rule = "highest-numbered authoritative revision whose status is not VOIDED"
+rule = "highest-numbered authoritative collision winner whose status is not VOIDED"
 description_attributes = "provider_id and source are descriptive; never partition capacity"
 
 # ---------------------------------------------------------------------------
@@ -129,7 +140,7 @@ description_attributes = "provider_id and source are descriptive; never partitio
 
 [revision]
 collision_before_effective = true
-authoritative_row_is_sole_content = true
+authoritative_winner_is_sole_content_for_revision = true
 collision_losers_remain_in_validated_population = true
 voided_revision_never_provides_final_state_room_clinic_interval = true
 no_effective_revision_if_all_voided = true
@@ -214,30 +225,30 @@ type = "integer"
 aggregation = "count of rows, after deduplication, that fail the malformed-input rules"
 
 [metrics.event_quality.adjustment_rows_valid]
-population = "3. validated survivors, normalized source == ADJUSTMENT"
+population = "3. validated surviving rows, normalized source == ADJUSTMENT"
 type = "integer"
 aggregation = "count of validated surviving rows from reservation_adjustments.ndjson"
 
 [metrics.event_quality.adjustment_rows_rejected]
 population = "1. raw rows, normalized source == ADJUSTMENT, minus adjustment_rows_valid"
 type = "integer"
-aggregation = "adjustment-feed rows that do not reach the validated survivors (duplicate or malformed); equals total adjustment rows minus adjustment_rows_valid"
+aggregation = "adjustment-feed rows that do not reach the validated surviving rows (duplicate or malformed); equals total adjustment rows minus adjustment_rows_valid"
 
 [metrics.identity_quality]
 keys = ["clinic_aliases_resolved", "room_aliases_resolved", "identity_tokens_unresolved"]
 
 [metrics.identity_quality.clinic_aliases_resolved]
-population = "3. validated survivors"
+population = "3. validated surviving rows"
 type = "integer"
 aggregation = "count of validated rows whose clinic token is a mapped clinic_directory alias"
 
 [metrics.identity_quality.room_aliases_resolved]
-population = "3. validated survivors"
+population = "3. validated surviving rows"
 type = "integer"
 aggregation = "count of validated rows whose room token is a clinic-scoped room_directory alias under its resolved canonical clinic"
 
 [metrics.identity_quality.identity_tokens_unresolved]
-population = "3. validated survivors"
+population = "3. validated surviving rows"
 type = "integer"
 aggregation = "count of validated rows for which clinic or room fell back to the normalized token"
 
@@ -245,19 +256,19 @@ aggregation = "count of validated rows for which clinic or room fell back to the
 keys = ["total_booking_ids", "voided_revisions", "bookings_with_effective_revision", "active_bookings", "cancelled_bookings", "bookings_with_no_effective_revision", "multi_day_active_bookings"]
 
 [metrics.revision_quality.total_booking_ids]
-population = "3. validated survivors"
+population = "3. validated surviving rows"
 type = "integer"
-aggregation = "number of distinct booking_id values among validated survivors"
+aggregation = "number of distinct booking_id values among validated surviving rows"
 
 [metrics.revision_quality.voided_revisions]
-population = "3. validated survivors"
+population = "3. validated surviving rows"
 type = "integer"
-aggregation = "number of validated surviving rows with status voided (collision losers remain; malformed rows do not)"
+aggregation = "number of validated surviving rows with status voided, including VOIDED rows that later lose a (booking_id, revision) collision (collision losers remain in the validated surviving row population; malformed rows do not)"
 
 [metrics.revision_quality.bookings_with_effective_revision]
 population = "5. effective revisions"
 type = "integer"
-aggregation = "number of bookings with an effective revision (at least one non-voided authoritative revision row)"
+aggregation = "number of bookings with an effective revision (at least one non-voided authoritative collision winner)"
 
 [metrics.revision_quality.active_bookings]
 population = "6. active effective bookings"
@@ -270,9 +281,9 @@ type = "integer"
 aggregation = "number of bookings whose effective revision has status cancelled"
 
 [metrics.revision_quality.bookings_with_no_effective_revision]
-population = "3. validated survivors"
+population = "3. validated surviving rows"
 type = "integer"
-aggregation = "number of bookings with no effective revision (every authoritative revision row voided)"
+aggregation = "number of bookings with no effective revision (every authoritative collision winner voided)"
 
 [metrics.revision_quality.multi_day_active_bookings]
 population = "6. active effective bookings"

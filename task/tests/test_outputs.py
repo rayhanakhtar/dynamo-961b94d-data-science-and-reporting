@@ -19,7 +19,7 @@ import csv
 import json
 import os
 
-OUTPUT_DIR = "/app/output"
+from conftest import OUTPUT_DIR
 
 REQUIRED_OUTPUTS = [
     "effective_bookings.csv",

@@ -85,7 +85,9 @@ Each category is an object with the exact keys above, in the exact order
 shown. Every value is an exact integer (no booleans, floats, `NaN`, or
 `Infinity`); there are no extra categories or keys. The population, filtering
 rule, and aggregation of every metric are defined in contract Section 17;
-category order, key order, and integer constraints are fixed.
+category order, key order, and integer constraints are fixed. In particular,
+`voided_revisions` counts validated surviving rows with status `voided`,
+including VOIDED rows that later lose a revision collision.
 
 ## Processing Requirements
 

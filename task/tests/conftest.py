@@ -32,11 +32,21 @@ DATA_INPUT_ROOMS = os.environ.get(
 EXPECTED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "expected")
 
-EFFECTIVE_PATH = os.path.join(OUTPUT_DIR, "effective_bookings.csv")
-HISTORY_PATH = os.path.join(OUTPUT_DIR, "booking_state_history.csv")
-FACTS_PATH = os.path.join(OUTPUT_DIR, "daily_room_capacity_facts.csv")
-RECONCILIATION_PATH = os.path.join(OUTPUT_DIR, "capacity_reconciliation.csv")
-SUMMARY_PATH = os.path.join(OUTPUT_DIR, "quality_summary.json")
+EFFECTIVE_PATH = os.environ.get(
+    "DYNAMO_EFFECTIVE_PATH",
+    os.path.join(OUTPUT_DIR, "effective_bookings.csv"))
+HISTORY_PATH = os.environ.get(
+    "DYNAMO_HISTORY_PATH",
+    os.path.join(OUTPUT_DIR, "booking_state_history.csv"))
+FACTS_PATH = os.environ.get(
+    "DYNAMO_FACTS_PATH",
+    os.path.join(OUTPUT_DIR, "daily_room_capacity_facts.csv"))
+RECONCILIATION_PATH = os.environ.get(
+    "DYNAMO_RECONCILIATION_PATH",
+    os.path.join(OUTPUT_DIR, "capacity_reconciliation.csv"))
+SUMMARY_PATH = os.environ.get(
+    "DYNAMO_SUMMARY_PATH",
+    os.path.join(OUTPUT_DIR, "quality_summary.json"))
 
 EFFECTIVE_COLS = ["booking_id", "status", "clinic_id", "room_id",
                   "start_ts", "end_ts", "provider_id", "source",

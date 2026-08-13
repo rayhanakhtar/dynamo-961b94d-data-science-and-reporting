@@ -106,6 +106,31 @@ Both directories use the field-normalization rules of Section 3.
   are truncated (floored) to the minute.
 - All times are local wall-clock time. No time-zone conversion is ever applied.
 
+### 3.1 Terminology and population vocabulary
+
+The following terms have fixed meanings throughout this contract.
+
+1. **Deduplication survivor** - a row retained by the `event_id`
+   first-occurrence rule of Section 4. Rows discarded as duplicate copies are
+   not deduplication survivors.
+
+2. **Validated surviving row** - a deduplication survivor that passes the
+   malformed-input rules of Section 16. The validated surviving row population
+   is the population from which every quality-summary metric is derived; later
+   pipeline stages never remove rows from it.
+
+3. **Authoritative collision winner** - for a given `(booking_id, revision)`,
+   the single validated surviving row selected by the collision rule of
+   Section 5 (latest `created_ts`, ties broken by greatest `event_id` compared
+   as strings). Collision losers do NOT disappear from the validated surviving
+   row population: every row that loses a collision remains an eligible
+   validated surviving row for every quality-summary metric whose population
+   is the validated surviving rows.
+
+4. **Effective revision** - the highest-numbered authoritative revision whose
+   authoritative status is not `voided` (Section 7). A booking whose every
+   authoritative revision is `voided` has no effective revision.
+
 ## 4. Event identity and duplicate events
 
 - A raw event is identified by its `event_id`.
@@ -117,7 +142,8 @@ Both directories use the field-normalization rules of Section 3.
   source/file order is kept; every later copy of the same `event_id` is a
   duplicate and is discarded. Each discarded copy counts toward
   `duplicate_events_removed` (Section 17). A row kept by this deduplication is
-  said to **survive deduplication**; a discarded copy does not.
+  said to be a **deduplication survivor** (Section 3.1); a discarded copy does
+  not.
 
 ## 5. Booking identity
 
@@ -126,18 +152,22 @@ Both directories use the field-normalization rules of Section 3.
 - Revisions of one booking are ordered by their integer `revision` value.
   Revision numbers need not be contiguous.
 - If two or more rows carry the same `(booking_id, revision)` pair, the row with
-  the latest `created_ts` is authoritative for that revision; if `created_ts`
-  ties, the row with the greatest `event_id` (compared as strings) wins.
+  the latest `created_ts` is the **authoritative collision winner** (Section 3.1)
+  for that revision; if `created_ts` ties, the row with the greatest `event_id`
+  (compared as strings) wins.
   Collision resolution operates on the union of validated surviving rows across
   **all** event sources (Section 4): a `scheduling_events.csv` row and a
   `reservation_adjustments.ndjson` row for the same `(booking_id, revision)`
   compete under the same rule.
 - Collision resolution is applied before effective-revision selection: the
-  **authoritative row** for a revision (the row chosen above) is that
-  revision's sole content for effective-revision selection and for all
-  capacity computation. Collision resolution does not remove the losing rows
-  from the population of rows that survived deduplication (Section 4); those
-  losing rows remain eligible rows for the quality-summary counts of
+  **authoritative collision winner** for a revision (the row chosen above;
+  Section 3.1) is that revision's sole content for effective-revision
+  selection and for all capacity computation. This "sole content" statement
+  concerns authoritative revision content only (status, room, clinic,
+  interval, provider, source); it does not change the quality-summary
+  population. Collision resolution does not remove the losing rows from the
+  validated surviving row population (Section 3.1); those losing rows remain
+  eligible validated surviving rows for the quality-summary counts of
   Section 17.
 
 ## 6. Status semantics
@@ -153,7 +183,9 @@ Each revision event has exactly one status:
 ## 7. Effective revision
 
 - A booking's **effective revision** is the highest-numbered revision whose
-  authoritative content is not `voided`. A `voided` revision never provides the
+  authoritative content is not `voided`; equivalently, the highest-numbered
+  authoritative collision winner whose status is not `voided` (Section 3.1). A
+  `voided` revision never provides the
   booking's final status, room, clinic, or interval, wherever it appears in the
   revision order.
 - The booking's final state and interval come only from its effective revision.
@@ -261,7 +293,7 @@ A row is **malformed** if, after normalization, any of these hold:
 Malformed rows are excluded from all capacity computation and are counted in
 `malformed_rows_rejected` (Section 17). Rejecting a malformed row never
 invalidates other, well-formed rows of the same booking. Malformed-row detection
-is applied to the rows that survive deduplication (Section 4): the surviving
+is applied to the **deduplication survivors** (Section 3.1): the deduplication-surviving
 copy of a duplicated event is the one validated. The malformed rules apply
 uniformly to every event source; an adjustment row that fails these rules is
 rejected in the same way as a core-feed row.
@@ -287,16 +319,16 @@ refinement of, the previous one:
 1. **raw rows** - every row across all event sources (`scheduling_events.csv`
    and `reservation_adjustments.ndjson`), including duplicates and malformed
    rows.
-2. **deduplicated survivors** - raw rows minus every copy of an `event_id`
+2. **deduplication survivors** - raw rows minus every copy of an `event_id`
    beyond the first (Section 4).
-3. **validated survivors** - deduplicated survivors that pass the
+3. **validated surviving rows** - deduplication survivors that pass the
    malformed-input rules of Section 16.
-4. **authoritative revision rows** - for each `(booking_id, revision)`, the
-   validated survivor selected by Section 5 collision resolution. Rows that
-   lose a collision remain in the validated population; collision resolution
-   does not remove them.
+4. **authoritative collision winners** - for each `(booking_id, revision)`, the
+   validated surviving row selected by Section 5 collision resolution. Rows that
+   lose a collision remain in the validated surviving row population; collision
+   resolution does not remove them.
 5. **effective revisions** - per booking, the highest non-voided authoritative
-   revision row (Section 7), or none.
+   collision winner (Section 7), or none.
 6. **active effective bookings** - effective revisions whose status is
    `booked` (Section 8).
 7. **materialized active intervals** - per-calendar-day pieces of active
@@ -307,8 +339,8 @@ refinement of, the previous one:
 Each quality-summary metric is computed over the population explicitly
 specified for that metric below. Later transformations do not redefine earlier
 population counts: each metric uses only its stated population. A booking that
-never reaches the validated survivors (every surviving row is malformed) is not
-part of any booking-level metric.
+never reaches the validated surviving rows (every deduplication survivor is
+malformed) is not part of any booking-level metric.
 
 ### event_quality
 
@@ -317,27 +349,27 @@ part of any booking-level metric.
 | `total_raw_events` | integer | 1. raw rows | Count of every data row across all event sources, including duplicates and malformed rows. |
 | `duplicate_events_removed` | integer | transition 1 to 2 | Count of rows discarded by the `event_id` deduplication (every copy of an `event_id` beyond the first, across all event sources). |
 | `malformed_rows_rejected` | integer | transition 2 to 3 | Count of rows, after deduplication, that fail the malformed-input rules of Section 16. |
-| `adjustment_rows_valid` | integer | 3. validated survivors, filtered to rows whose normalized `source` is `ADJUSTMENT` | Count of validated surviving rows that came from `reservation_adjustments.ndjson` (identified by their `source` value `ADJUSTMENT`). |
-| `adjustment_rows_rejected` | integer | 1. raw rows, filtered to rows whose normalized `source` is `ADJUSTMENT`, minus `adjustment_rows_valid` | Count of adjustment-feed rows that do not reach the validated survivors (whether discarded as duplicates or rejected as malformed). Equivalently, total adjustment rows minus `adjustment_rows_valid`. |
+| `adjustment_rows_valid` | integer | 3. validated surviving rows, filtered to rows whose normalized `source` is `ADJUSTMENT` | Count of validated surviving rows that came from `reservation_adjustments.ndjson` (identified by their `source` value `ADJUSTMENT`). |
+| `adjustment_rows_rejected` | integer | 1. raw rows, filtered to rows whose normalized `source` is `ADJUSTMENT`, minus `adjustment_rows_valid` | Count of adjustment-feed rows that do not reach the validated surviving rows (whether discarded as duplicates or rejected as malformed). Equivalently, total adjustment rows minus `adjustment_rows_valid`. |
 
 ### identity_quality
 
 | Key | Type | Population | Aggregation |
 |-----|------|-----------|-------------|
-| `clinic_aliases_resolved` | integer | 3. validated survivors | Count of validated rows whose normalized clinic token is present as a `clinic_alias` in `clinic_directory.csv` (i.e. resolves via a directory mapping rather than the fallback). |
-| `room_aliases_resolved` | integer | 3. validated survivors | Count of validated rows whose normalized room token, looked up under its resolved canonical clinic, is present as a `room_alias` in `room_directory.csv` (i.e. resolves via a clinic-scoped directory mapping rather than the fallback). |
-| `identity_tokens_unresolved` | integer | 3. validated survivors | Count of validated rows for which the clinic token is not a mapped alias OR the room token is not a clinic-scoped mapped alias (at least one fell back to its normalized token). |
+| `clinic_aliases_resolved` | integer | 3. validated surviving rows | Count of validated rows whose normalized clinic token is present as a `clinic_alias` in `clinic_directory.csv` (i.e. resolves via a directory mapping rather than the fallback). |
+| `room_aliases_resolved` | integer | 3. validated surviving rows | Count of validated rows whose normalized room token, looked up under its resolved canonical clinic, is present as a `room_alias` in `room_directory.csv` (i.e. resolves via a clinic-scoped directory mapping rather than the fallback). |
+| `identity_tokens_unresolved` | integer | 3. validated surviving rows | Count of validated rows for which the clinic token is not a mapped alias OR the room token is not a clinic-scoped mapped alias (at least one fell back to its normalized token). |
 
 ### revision_quality
 
 | Key | Type | Population | Aggregation |
 |-----|------|-----------|-------------|
-| `total_booking_ids` | integer | 3. validated survivors | Number of distinct `booking_id` values among the validated survivors. |
-| `voided_revisions` | integer | 3. validated survivors | Number of validated surviving rows whose normalized `status` is `voided`. Collision losers remain in this population; malformed rows do not. |
-| `bookings_with_effective_revision` | integer | 5. effective revisions | Number of bookings (from `total_booking_ids`) that have an effective revision (at least one non-voided authoritative revision row). |
+| `total_booking_ids` | integer | 3. validated surviving rows | Number of distinct `booking_id` values among the validated surviving rows. |
+| `voided_revisions` | integer | 3. validated surviving rows | Number of validated surviving rows whose normalized `status` is `voided`. This includes VOIDED rows that later lose a `(booking_id, revision)` collision: collision resolution changes which row supplies authoritative revision content, but it does not retroactively remove collision-losing rows from the validated surviving row population used by this metric. Malformed rows do not appear in this population. |
+| `bookings_with_effective_revision` | integer | 5. effective revisions | Number of bookings (from `total_booking_ids`) that have an effective revision (at least one non-voided authoritative collision winner). |
 | `active_bookings` | integer | 6. active effective bookings | Number of bookings whose effective revision has status `booked`. This includes effective BOOKED bookings whose interval is zero-length. |
 | `cancelled_bookings` | integer | 5. effective revisions | Number of bookings whose effective revision has status `cancelled`. |
-| `bookings_with_no_effective_revision` | integer | 3. validated survivors | Number of bookings (from `total_booking_ids`) with no effective revision (Section 7): every authoritative revision row of the booking is `voided`. |
+| `bookings_with_no_effective_revision` | integer | 3. validated surviving rows | Number of bookings (from `total_booking_ids`) with no effective revision (Section 7): every authoritative collision winner of the booking is `voided`. |
 | `multi_day_active_bookings` | integer | 6. active effective bookings | Number of active BOOKED effective bookings whose blocked minutes fall on more than one calendar day (Section 10). |
 
 ### capacity_quality
@@ -416,7 +448,8 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
   - `room_id`: clinic-scoped room-directory mapping > normalized raw event token
     fallback.
 - **Booking revision content precedence:** for each `(booking_id, revision)`,
-  the authoritative row (Section 5) supplies `status`, `start_ts`, `end_ts`,
+  the authoritative collision winner (Section 5, Section 3.1) supplies
+  `status`, `start_ts`, `end_ts`,
   `clinic_id`, `room_id`, `provider_id`, and `source`. The winner is the row
   with the latest `created_ts` across ALL validated surviving rows from all
   event sources; ties are broken by the greatest `event_id` (compared as
@@ -438,7 +471,7 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
 
   | Column | Semantics |
   |--------|-----------|
-  | `event_id` | Surviving validated event id (unique). |
+  | `event_id` | Deduplication-surviving validated event id (unique). |
   | `booking_id` | Booking id. |
   | `revision` | Revision number. |
   | `status` | Canonical status. |
@@ -479,7 +512,7 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
   | `effective_revision` | The revision number that is effective. |
 
 - Population: one row per `booking_id` that has an effective revision; content
-  comes only from the effective authoritative revision (Section 7).
+  comes only from the effective authoritative collision winner (Section 7).
 - `booked` effective bookings are the capacity-driving population; `cancelled`
   effective bookings remain represented for state/quality semantics but do not
   contribute blocked capacity.
@@ -500,20 +533,20 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
   | `room_id` | Canonical room of this revision. |
   | `start_ts` | Interval start of this revision. |
   | `end_ts` | Interval end of this revision. |
-  | `effective_from` | Deterministic start of this revision's effective span (the authoritative row's `created_ts`). |
+  | `effective_from` | Deterministic start of this revision's effective span (the authoritative collision winner's `created_ts`). |
   | `effective_to` | Deterministic end of this revision's effective span: the `created_ts` of the next higher-numbered authoritative revision of the same booking, or empty for the highest-numbered authoritative revision. |
   | `is_effective` | `1` exactly for the current effective revision when one exists, else `0`. |
 
-- Population: one row per authoritative revision; voided authoritative
-  revisions are represented according to the history semantics below.
+- Population: one row per authoritative collision winner; voided authoritative
+  winners are represented according to the history semantics below.
 - `is_effective = 1` marks exactly the current effective revision when one
-  exists; a booking whose every authoritative revision is `voided` has no
+  exists; a booking whose every authoritative collision winner is `voided` has no
   effective row (`is_effective` is never `1` for it).
 - `effective_from`/`effective_to` are deterministic and derived from the
   authoritative revision chronology: `effective_from` is the authoritative
-  row's `created_ts`, and `effective_to` is the `created_ts` of the next
-  higher-numbered authoritative revision of the same booking, or empty for the
-  highest-numbered authoritative revision.
+  collision winner's `created_ts`, and `effective_to` is the `created_ts` of the next
+  higher-numbered authoritative collision winner of the same booking, or empty for the
+  highest-numbered authoritative collision winner.
 
 ## 26. Capacity reconciliation
 
@@ -537,8 +570,8 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
 ## 27. Cross-artifact invariants
 
 - **A. Effective-booking identity:** every `effective_bookings.csv` row
-  corresponds to exactly one effective revision in the authoritative revision
-  ledger.
+  corresponds to exactly one effective revision in the authoritative
+  collision-winner ledger.
 - **B. History/current-state identity:** for every booking with an effective
   revision, the history row with `is_effective = 1` equals the corresponding
   `effective_bookings.csv` row.

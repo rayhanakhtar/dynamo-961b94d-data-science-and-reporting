@@ -9,8 +9,8 @@ import json
 import os
 import math
 
-from conftest import (SUMMARY_PATH, EXPECTED_DIR, indep_facts_lookup,
-                      indep_reconciliation)
+from conftest import (SUMMARY_PATH, FACTS_PATH, EXPECTED_DIR,
+                      indep_facts_lookup, indep_reconciliation)
 
 QUALITY_CATEGORIES = ["event_quality", "identity_quality", "revision_quality",
                       "capacity_quality", "reconciliation_quality"]
@@ -30,8 +30,7 @@ RECON_KEYS = ["reconciled_room_days", "reconciliation_mismatches"]
 
 
 def _read_facts():
-    with open(os.path.join(OUTPUT_DIR := "/app/output",
-                           "daily_room_capacity_facts.csv"),
+    with open(FACTS_PATH,
               encoding="utf-8", newline="") as h:
         return list(csv.reader(h))
 

@@ -85,12 +85,6 @@ def drop_duplicate_events(rows):
     return kept, dropped
 
 
-def collect_distinct_booking_ids(rows):
-    """Return the distinct booking identifiers present in the given rows."""
-    return {row["booking_id"].strip()
-            for row in rows if row["booking_id"].strip()}
-
-
 def normalize_row(row):
     """Trim and type-check one export row; return None if the row is bad."""
     event_id = row["event_id"].strip()
@@ -175,12 +169,6 @@ def resolve_collisions(records):
     return by_key
 
 
-def collect_voided_revision_rows(authoritative):
-    """Return the authoritative revision rows whose status is voided."""
-    return [rec for rec in authoritative.values()
-            if rec["status"] == "VOIDED"]
-
-
 def select_effective(records, authoritative):
     """Resolve each booking to the row that describes its current state.
 
@@ -211,21 +199,29 @@ def select_materialized(current, authoritative):
     The effective revision of a booking is its current state; a booking whose
     effective revision is booked contributes that interval.
     """
+    booked_by_booking = defaultdict(list)
+    for (booking_id, _revision), record in authoritative.items():
+        if record["status"] == "BOOKED":
+            booked_by_booking[booking_id].append(record)
+
     materialized = {}
     for booking_id, effective in current.items():
         if effective is None or effective["status"] != "BOOKED":
             materialized[booking_id] = None
-        else:
-            materialized[booking_id] = effective
-
+            continue
+        start = effective["start"]
+        if effective["end"].date() > effective["start"].date():
+            for record in booked_by_booking[booking_id]:
+                if record is effective:
+                    continue
+                if (record["room_id"], record["clinic_id"]) != (
+                        effective["room_id"], effective["clinic_id"]):
+                    continue
+                if record["start"].date() < effective["start"].date() and \
+                        record["start"] < start:
+                    start = record["start"]
+        materialized[booking_id] = dict(effective, start=start)
     return materialized
-
-
-def collect_active_bookings(materialized):
-    """Return the booking ids whose materialized interval occupies at least
-    one minute of room time."""
-    return [booking_id for booking_id, rec in materialized.items()
-            if rec is not None and rec["end"] > rec["start"]]
 
 
 def day_segments(record):
@@ -314,8 +310,11 @@ def count_overlap_days(materialized):
     return overlap_days
 
 
-def build_summary(rows, dropped, rejected, current, fact_rows, overlap_days,
-                  booking_ids, voided_rows, active_bookings):
+def build_summary(rows, dropped, rejected, records, authoritative, current, fact_rows,
+                  overlap_days):
+    voided_rows = sum(1 for rec in records if rec["status"] == "VOIDED")
+    active = sum(1 for rec in current.values()
+                 if rec is not None and rec["status"] == "BOOKED")
     cancelled = sum(1 for rec in current.values()
                     if rec is not None and rec["status"] == "CANCELLED")
     no_effective = sum(1 for rec in current.values() if rec is None)
@@ -331,10 +330,10 @@ def build_summary(rows, dropped, rejected, current, fact_rows, overlap_days,
         "total_raw_events": len(rows),
         "duplicate_events_removed": dropped,
         "malformed_rows_rejected": rejected,
-        "total_booking_ids": len(booking_ids),
-        "voided_revisions": len(voided_rows),
+        "total_booking_ids": len(current),
+        "voided_revisions": voided_rows,
         "bookings_with_effective_revision": len(current) - no_effective,
-        "active_bookings": len(active_bookings),
+        "active_bookings": active,
         "cancelled_bookings": cancelled,
         "bookings_with_no_effective_revision": no_effective,
         "multi_day_active_bookings": multi_day,
@@ -368,17 +367,14 @@ def main():
 
     rows = read_export(INPUT_PATH)
     surviving, dropped = drop_duplicate_events(rows)
-    booking_ids = collect_distinct_booking_ids(surviving)
     records, rejected = normalize_rows(surviving)
     authoritative = resolve_collisions(records)
-    voided_rows = collect_voided_revision_rows(authoritative)
     current = select_effective(records, authoritative)
     materialized = select_materialized(current, authoritative)
-    active_bookings = collect_active_bookings(materialized)
     fact_rows = build_facts(materialized)
     overlap_days = count_overlap_days(materialized)
-    summary = build_summary(rows, dropped, rejected, current, fact_rows, overlap_days,
-                            booking_ids, voided_rows, active_bookings)
+    summary = build_summary(rows, dropped, rejected, records, authoritative, current,
+                            fact_rows, overlap_days)
 
     write_facts(FACTS_PATH, fact_rows)
     write_summary(SUMMARY_PATH, summary)

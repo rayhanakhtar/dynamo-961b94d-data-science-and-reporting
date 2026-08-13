@@ -269,7 +269,14 @@ rejected in the same way as a core-feed row.
 ## 17. Quality summary
 
 `/app/output/quality_summary.json` is a single JSON object containing exactly
-**twelve keys**, each with an integer value. The keys appear in this order:
+**five top-level categories**, in this exact order:
+
+`event_quality`, `identity_quality`, `revision_quality`,
+`capacity_quality`, `reconciliation_quality`.
+
+Each category is an object whose keys appear in the exact order listed below.
+Every value is an exact integer. The categories, keys, and values are fixed;
+the object contains no extra categories and no extra keys.
 
 ### Population provenance
 
@@ -277,54 +284,81 @@ The pipeline transforms the raw export through a sequence of distinct
 populations. Each stage produces a population that is a subset of, or a
 refinement of, the previous one:
 
-1. **raw rows** — every row across all event sources (`scheduling_events.csv`
-   and `reservation_adjustments.ndjson`).
-2. **deduplicated survivors** — raw rows minus every copy of an `event_id`
+1. **raw rows** - every row across all event sources (`scheduling_events.csv`
+   and `reservation_adjustments.ndjson`), including duplicates and malformed
+   rows.
+2. **deduplicated survivors** - raw rows minus every copy of an `event_id`
    beyond the first (Section 4).
-3. **validated survivors** — deduplicated survivors that pass the
+3. **validated survivors** - deduplicated survivors that pass the
    malformed-input rules of Section 16.
-4. **authoritative revision rows** — for each `(booking_id, revision)`, the
+4. **authoritative revision rows** - for each `(booking_id, revision)`, the
    validated survivor selected by Section 5 collision resolution. Rows that
    lose a collision remain in the validated population; collision resolution
    does not remove them.
-5. **effective revisions** — per booking, the highest non-voided authoritative
+5. **effective revisions** - per booking, the highest non-voided authoritative
    revision row (Section 7), or none.
-6. **active effective bookings** — effective revisions whose status is
+6. **active effective bookings** - effective revisions whose status is
    `booked` (Section 8).
-7. **materialized active intervals** — per-calendar-day pieces of active
+7. **materialized active intervals** - per-calendar-day pieces of active
    effective bookings (Section 10).
-8. **room-day union intervals** — the per-`(clinic_id, room_id, day)` union of
+8. **room-day union intervals** - the per-`(clinic_id, room_id, day)` union of
    materialized active intervals (Sections 11-12).
 
 Each quality-summary metric is computed over the population explicitly
-specified for that metric in the table below, named by the stage (or stage
-transition) that produces it. Later transformations do not redefine earlier
-population counts: each metric uses only its stated population.
+specified for that metric below. Later transformations do not redefine earlier
+population counts: each metric uses only its stated population. A booking that
+never reaches the validated survivors (every surviving row is malformed) is not
+part of any booking-level metric.
 
-| Key | Meaning | Population |
-|-----|---------|-----------|
-| `total_raw_events` | Number of data rows across all event sources, including duplicates and malformed rows. | 1. raw rows. |
-| `duplicate_events_removed` | Number of rows discarded by the `event_id` deduplication (every copy of an `event_id` beyond the first). | transition 1 to 2. |
-| `malformed_rows_rejected` | Number of rows, after deduplication, that fail the malformed-input rules of Section 16. | transition 2 to 3. |
-| `total_booking_ids` | Number of distinct `booking_id` values in the validated survivors. | 3. validated survivors. |
-| `voided_revisions` | Number of rows in the validated survivors whose normalized `status` is `voided`. Collision losers remain in this population; malformed rows do not. | 3. validated survivors. |
-| `bookings_with_effective_revision` | Number of distinct bookings (from `total_booking_ids`) that have at least one non-voided authoritative revision row. | 3. validated survivors. |
-| `active_bookings` | Number of bookings whose effective revision has status `booked`. | 6. active effective bookings. |
-| `cancelled_bookings` | Number of bookings whose effective revision has status `cancelled`. | 5. effective revisions. |
-| `bookings_with_no_effective_revision` | Number of bookings (from `total_booking_ids`) with no effective revision (Section 7): every authoritative revision row of the booking (Section 5) is `voided`. | 3. validated survivors. |
-| `multi_day_active_bookings` | Number of active bookings whose blocked minutes fall on more than one calendar day (Section 10). | 6. active effective bookings. |
-| `room_clinic_days_with_overlap` | Number of `(clinic_id, room_id, calendar_date)` combinations on which at least two active bookings blocked at least one shared minute (equivalently, combinations where the day's union minutes are strictly fewer than the sum of the individual active bookings' minutes on that day). | 8. room-day union intervals. |
-| `total_blocked_minutes` | Sum of `blocked_minutes` over every row of the output fact table. | 8. room-day union intervals. |
+### event_quality
 
-A booking that never reaches the validated survivors (every surviving row is
-malformed) is not part of `total_booking_ids` and is counted by none of the
-booking-level metrics.
+| Key | Type | Population | Aggregation |
+|-----|------|-----------|-------------|
+| `total_raw_events` | integer | 1. raw rows | Count of every data row across all event sources, including duplicates and malformed rows. |
+| `duplicate_events_removed` | integer | transition 1 to 2 | Count of rows discarded by the `event_id` deduplication (every copy of an `event_id` beyond the first, across all event sources). |
+| `malformed_rows_rejected` | integer | transition 2 to 3 | Count of rows, after deduplication, that fail the malformed-input rules of Section 16. |
+| `adjustment_rows_valid` | integer | 3. validated survivors, filtered to rows whose normalized `source` is `ADJUSTMENT` | Count of validated surviving rows that came from `reservation_adjustments.ndjson` (identified by their `source` value `ADJUSTMENT`). |
+| `adjustment_rows_rejected` | integer | 1. raw rows, filtered to rows whose normalized `source` is `ADJUSTMENT`, minus `adjustment_rows_valid` | Count of adjustment-feed rows that do not reach the validated survivors (whether discarded as duplicates or rejected as malformed). Equivalently, total adjustment rows minus `adjustment_rows_valid`. |
 
-The quality summary contains the twelve keys above and no others. The number of
-rows in the output fact table is deliberately **not** a JSON key: it is a
-separate quantity that can be derived from the CSV itself (the count of data
-rows in `/app/output/daily_room_capacity_facts.csv` after the header), and it
-is not part of the summary object.
+### identity_quality
+
+| Key | Type | Population | Aggregation |
+|-----|------|-----------|-------------|
+| `clinic_aliases_resolved` | integer | 3. validated survivors | Count of validated rows whose normalized clinic token is present as a `clinic_alias` in `clinic_directory.csv` (i.e. resolves via a directory mapping rather than the fallback). |
+| `room_aliases_resolved` | integer | 3. validated survivors | Count of validated rows whose normalized room token, looked up under its resolved canonical clinic, is present as a `room_alias` in `room_directory.csv` (i.e. resolves via a clinic-scoped directory mapping rather than the fallback). |
+| `identity_tokens_unresolved` | integer | 3. validated survivors | Count of validated rows for which the clinic token is not a mapped alias OR the room token is not a clinic-scoped mapped alias (at least one fell back to its normalized token). |
+
+### revision_quality
+
+| Key | Type | Population | Aggregation |
+|-----|------|-----------|-------------|
+| `total_booking_ids` | integer | 3. validated survivors | Number of distinct `booking_id` values among the validated survivors. |
+| `voided_revisions` | integer | 3. validated survivors | Number of validated surviving rows whose normalized `status` is `voided`. Collision losers remain in this population; malformed rows do not. |
+| `bookings_with_effective_revision` | integer | 5. effective revisions | Number of bookings (from `total_booking_ids`) that have an effective revision (at least one non-voided authoritative revision row). |
+| `active_bookings` | integer | 6. active effective bookings | Number of bookings whose effective revision has status `booked`. This includes effective BOOKED bookings whose interval is zero-length. |
+| `cancelled_bookings` | integer | 5. effective revisions | Number of bookings whose effective revision has status `cancelled`. |
+| `bookings_with_no_effective_revision` | integer | 3. validated survivors | Number of bookings (from `total_booking_ids`) with no effective revision (Section 7): every authoritative revision row of the booking is `voided`. |
+| `multi_day_active_bookings` | integer | 6. active effective bookings | Number of active BOOKED effective bookings whose blocked minutes fall on more than one calendar day (Section 10). |
+
+### capacity_quality
+
+| Key | Type | Population | Aggregation |
+|-----|------|-----------|-------------|
+| `total_blocked_minutes` | integer | 8. room-day union intervals | Sum of `blocked_minutes` over every row of the output fact table. |
+| `room_clinic_days_with_overlap` | integer | 8. room-day union intervals | Number of `(clinic_id, room_id, calendar_date)` combinations for which at least two active bookings blocked at least one shared minute; equivalently, combinations whose day union minutes are strictly fewer than the sum of the individual active bookings' minutes on that day. |
+| `overlap_minutes_total` | integer | 8. room-day union intervals | Sum of `overlap_minutes` over every row of the capacity reconciliation artifact (each row's `overlap_minutes` = `raw_interval_minutes - blocked_minutes`). |
+
+### reconciliation_quality
+
+| Key | Type | Population | Aggregation |
+|-----|------|-----------|-------------|
+| `reconciled_room_days` | integer | 8. room-day union intervals | Number of rows in the capacity reconciliation artifact. |
+| `reconciliation_mismatches` | integer | 8. room-day union intervals | Count of reconciliation rows for which the conservation invariant is violated: `raw_interval_minutes != blocked_minutes + overlap_minutes`, or `overlap_minutes < 0`. For a correct pipeline this is `0`. |
+
+The number of rows in the output fact table is deliberately **not** a JSON key:
+it is a separate quantity that can be derived from the CSV itself (the count of
+data rows in `/app/output/daily_room_capacity_facts.csv` after the header), and
+it is not part of the summary object.
 
 Consistency identity: `total_booking_ids =
 bookings_with_effective_revision + bookings_with_no_effective_revision`, and
@@ -537,7 +571,9 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
 
 ## 29. Quality metric categories
 
-- The quality summary (Section 17) is organized into deterministic categories:
+- The quality summary is organized into exactly five deterministic categories,
+  each with a fixed key set and key order, as normatively defined in
+  Section 17:
 
   | Category | Coverage |
   |----------|----------|
@@ -548,7 +584,6 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
   | `reconciliation_quality` | reconciled room-day counts and mismatches. |
 
 - Every metric has an exact source population, an exact aggregation, and an
-  exact deterministic integer type.
-- The exact key set and values are finalized in the implementation phases; the
-  twelve keys already specified in Section 17 remain the current validated
-  quality-summary semantics.
+  exact deterministic integer type, all specified in Section 17.
+- Section 17 is the sole authoritative definition of the quality-summary JSON
+  schema; it supersedes any earlier flat-key representation.

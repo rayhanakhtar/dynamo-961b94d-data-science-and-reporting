@@ -168,6 +168,10 @@ conservation_invariant = "raw_interval_minutes = blocked_minutes + overlap_minut
 path = "/app/output/quality_summary.json"
 format = "json"
 deterministic_integer_metrics = true
+categories = ["event_quality", "identity_quality", "revision_quality", "capacity_quality", "reconciliation_quality"]
+category_key_order_is_fixed = true
+no_extra_categories = true
+no_extra_keys = true
 
 # ---------------------------------------------------------------------------
 # Canonical intermediate ledger
@@ -184,23 +188,127 @@ canonical_room_belongs_to_resolved_clinic_when_mapped = true
 no_downstream_dependency_on_source_specific_format = true
 
 # ---------------------------------------------------------------------------
-# Quality metric categories (final key set fixed in implementation phases)
+# Quality metric categories
+#
+# The key set, key order, population, and aggregation of every metric are
+# authoritative and defined normatively in fact_contract.md section 17. This
+# structured block mirrors that contract exactly.
 # ---------------------------------------------------------------------------
 
 [metrics.event_quality]
-candidates = ["total_raw_events", "duplicate_events_removed", "malformed_rows_rejected", "adjustment_rows_valid", "adjustment_rows_rejected"]
+keys = ["total_raw_events", "duplicate_events_removed", "malformed_rows_rejected", "adjustment_rows_valid", "adjustment_rows_rejected"]
+
+[metrics.event_quality.total_raw_events]
+population = "1. raw rows"
+type = "integer"
+aggregation = "count of every data row across all event sources, including duplicates and malformed rows"
+
+[metrics.event_quality.duplicate_events_removed]
+population = "transition 1 to 2"
+type = "integer"
+aggregation = "count of rows discarded by event_id deduplication (every copy of an event_id beyond the first)"
+
+[metrics.event_quality.malformed_rows_rejected]
+population = "transition 2 to 3"
+type = "integer"
+aggregation = "count of rows, after deduplication, that fail the malformed-input rules"
+
+[metrics.event_quality.adjustment_rows_valid]
+population = "3. validated survivors, normalized source == ADJUSTMENT"
+type = "integer"
+aggregation = "count of validated surviving rows from reservation_adjustments.ndjson"
+
+[metrics.event_quality.adjustment_rows_rejected]
+population = "1. raw rows, normalized source == ADJUSTMENT, minus adjustment_rows_valid"
+type = "integer"
+aggregation = "adjustment-feed rows that do not reach the validated survivors (duplicate or malformed); equals total adjustment rows minus adjustment_rows_valid"
 
 [metrics.identity_quality]
-candidates = ["clinic_aliases_resolved", "room_aliases_resolved", "identity_tokens_unresolved"]
+keys = ["clinic_aliases_resolved", "room_aliases_resolved", "identity_tokens_unresolved"]
+
+[metrics.identity_quality.clinic_aliases_resolved]
+population = "3. validated survivors"
+type = "integer"
+aggregation = "count of validated rows whose clinic token is a mapped clinic_directory alias"
+
+[metrics.identity_quality.room_aliases_resolved]
+population = "3. validated survivors"
+type = "integer"
+aggregation = "count of validated rows whose room token is a clinic-scoped room_directory alias under its resolved canonical clinic"
+
+[metrics.identity_quality.identity_tokens_unresolved]
+population = "3. validated survivors"
+type = "integer"
+aggregation = "count of validated rows for which clinic or room fell back to the normalized token"
 
 [metrics.revision_quality]
-candidates = ["total_booking_ids", "voided_revisions", "bookings_with_effective_revision", "active_bookings", "cancelled_bookings", "bookings_with_no_effective_revision", "multi_day_active_bookings"]
+keys = ["total_booking_ids", "voided_revisions", "bookings_with_effective_revision", "active_bookings", "cancelled_bookings", "bookings_with_no_effective_revision", "multi_day_active_bookings"]
+
+[metrics.revision_quality.total_booking_ids]
+population = "3. validated survivors"
+type = "integer"
+aggregation = "number of distinct booking_id values among validated survivors"
+
+[metrics.revision_quality.voided_revisions]
+population = "3. validated survivors"
+type = "integer"
+aggregation = "number of validated surviving rows with status voided (collision losers remain; malformed rows do not)"
+
+[metrics.revision_quality.bookings_with_effective_revision]
+population = "5. effective revisions"
+type = "integer"
+aggregation = "number of bookings with an effective revision (at least one non-voided authoritative revision row)"
+
+[metrics.revision_quality.active_bookings]
+population = "6. active effective bookings"
+type = "integer"
+aggregation = "number of bookings whose effective revision has status booked (includes zero-length effective BOOKED bookings)"
+
+[metrics.revision_quality.cancelled_bookings]
+population = "5. effective revisions"
+type = "integer"
+aggregation = "number of bookings whose effective revision has status cancelled"
+
+[metrics.revision_quality.bookings_with_no_effective_revision]
+population = "3. validated survivors"
+type = "integer"
+aggregation = "number of bookings with no effective revision (every authoritative revision row voided)"
+
+[metrics.revision_quality.multi_day_active_bookings]
+population = "6. active effective bookings"
+type = "integer"
+aggregation = "number of active BOOKED effective bookings with blocked minutes on more than one calendar day"
 
 [metrics.capacity_quality]
-candidates = ["total_blocked_minutes", "room_clinic_days_with_overlap", "overlap_minutes_total"]
+keys = ["total_blocked_minutes", "room_clinic_days_with_overlap", "overlap_minutes_total"]
+
+[metrics.capacity_quality.total_blocked_minutes]
+population = "8. room-day union intervals"
+type = "integer"
+aggregation = "sum of blocked_minutes over every row of the daily facts table"
+
+[metrics.capacity_quality.room_clinic_days_with_overlap]
+population = "8. room-day union intervals"
+type = "integer"
+aggregation = "number of room/clinic/day combinations whose union minutes are strictly fewer than the sum of the individual active bookings' minutes"
+
+[metrics.capacity_quality.overlap_minutes_total]
+population = "8. room-day union intervals"
+type = "integer"
+aggregation = "sum of overlap_minutes over every row of the capacity reconciliation artifact"
 
 [metrics.reconciliation_quality]
-candidates = ["reconciled_room_days", "reconciliation_mismatches"]
+keys = ["reconciled_room_days", "reconciliation_mismatches"]
+
+[metrics.reconciliation_quality.reconciled_room_days]
+population = "8. room-day union intervals"
+type = "integer"
+aggregation = "number of rows in the capacity reconciliation artifact"
+
+[metrics.reconciliation_quality.reconciliation_mismatches]
+population = "8. room-day union intervals"
+type = "integer"
+aggregation = "count of reconciliation rows violating raw = blocked + overlap or having negative overlap; 0 for a correct pipeline"
 
 # ---------------------------------------------------------------------------
 # Cross-artifact invariants

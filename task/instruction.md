@@ -43,6 +43,57 @@ Write exactly these five files:
 Each artifact's schema, population, sort order, and invariants are defined in
 the contract.
 
+### quality_summary.json schema
+
+`/app/output/quality_summary.json` is a single UTF-8 JSON object containing
+exactly five top-level categories, in this exact order:
+
+`event_quality`, `identity_quality`, `revision_quality`,
+`capacity_quality`, `reconciliation_quality`.
+
+Each category is an object with the exact keys below, in the exact order shown.
+Every value is an exact integer (no booleans, floats, `NaN`, or `Infinity`).
+The object contains no extra categories and no extra keys.
+
+```json
+{
+  "event_quality": {
+    "total_raw_events": 0,
+    "duplicate_events_removed": 0,
+    "malformed_rows_rejected": 0,
+    "adjustment_rows_valid": 0,
+    "adjustment_rows_rejected": 0
+  },
+  "identity_quality": {
+    "clinic_aliases_resolved": 0,
+    "room_aliases_resolved": 0,
+    "identity_tokens_unresolved": 0
+  },
+  "revision_quality": {
+    "total_booking_ids": 0,
+    "voided_revisions": 0,
+    "bookings_with_effective_revision": 0,
+    "active_bookings": 0,
+    "cancelled_bookings": 0,
+    "bookings_with_no_effective_revision": 0,
+    "multi_day_active_bookings": 0
+  },
+  "capacity_quality": {
+    "total_blocked_minutes": 0,
+    "room_clinic_days_with_overlap": 0,
+    "overlap_minutes_total": 0
+  },
+  "reconciliation_quality": {
+    "reconciled_room_days": 0,
+    "reconciliation_mismatches": 0
+  }
+}
+```
+
+The exact population, filtering rule, and aggregation of every metric are
+defined in the contract (Section 17). Key order, category order, and the
+integer constraints above are fixed and deterministic.
+
 ## Processing Requirements
 
 Each rule is specified in full in the contract; apply them exactly.

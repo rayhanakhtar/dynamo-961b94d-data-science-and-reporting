@@ -1,14 +1,14 @@
 {
-  "total_raw_events": 1060,
+  "total_raw_events": 1064,
   "duplicate_events_removed": 43,
   "malformed_rows_rejected": 20,
-  "total_booking_ids": 755,
-  "voided_revisions": 48,
-  "bookings_with_effective_revision": 752,
-  "active_bookings": 643,
+  "total_booking_ids": 757,
+  "voided_revisions": 50,
+  "bookings_with_effective_revision": 753,
+  "active_bookings": 644,
   "cancelled_bookings": 109,
-  "bookings_with_no_effective_revision": 3,
+  "bookings_with_no_effective_revision": 4,
   "multi_day_active_bookings": 12,
   "room_clinic_days_with_overlap": 46,
-  "total_blocked_minutes": 55159
+  "total_blocked_minutes": 55189
 }

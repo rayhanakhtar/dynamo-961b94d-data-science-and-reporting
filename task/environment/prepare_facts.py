@@ -161,6 +161,8 @@ def resolve_collisions(records):
     """
     by_key = {}
     for rec in records:
+        if rec["status"] == "VOIDED":
+            continue
         key = (rec["booking_id"], rec["revision"])
         prior = by_key.get(key)
         if prior is None or (rec["created_ts"], rec["event_id"]) > \
@@ -199,28 +201,13 @@ def select_materialized(current, authoritative):
     The effective revision of a booking is its current state; a booking whose
     effective revision is booked contributes that interval.
     """
-    booked_by_booking = defaultdict(list)
-    for (booking_id, _revision), record in authoritative.items():
-        if record["status"] == "BOOKED":
-            booked_by_booking[booking_id].append(record)
-
     materialized = {}
     for booking_id, effective in current.items():
         if effective is None or effective["status"] != "BOOKED":
             materialized[booking_id] = None
-            continue
-        start = effective["start"]
-        if effective["end"].date() > effective["start"].date():
-            for record in booked_by_booking[booking_id]:
-                if record is effective:
-                    continue
-                if (record["room_id"], record["clinic_id"]) != (
-                        effective["room_id"], effective["clinic_id"]):
-                    continue
-                if record["start"].date() < effective["start"].date() and \
-                        record["start"] < start:
-                    start = record["start"]
-        materialized[booking_id] = dict(effective, start=start)
+        else:
+            materialized[booking_id] = effective
+
     return materialized
 
 

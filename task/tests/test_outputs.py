@@ -55,7 +55,7 @@ SUMMARY_KEYS = [
 ]
 
 # Independently audited whole-dataset total (fact_contract.md sections 15-17).
-TOTAL_BLOCKED_MINUTES = 55159
+TOTAL_BLOCKED_MINUTES = 55189
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_facts_columns_and_minutes(facts_rows):
 
 def test_facts_row_count(facts_rows):
     _header, rows = facts_rows
-    assert len(rows) == 270, "expected 270 fact rows, got %d" % len(rows)
+    assert len(rows) == 271, "expected 271 fact rows, got %d" % len(rows)
 
 
 def test_facts_unique_cells(facts_rows):

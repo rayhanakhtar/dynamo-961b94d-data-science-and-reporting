@@ -1,0 +1,219 @@
+# Fact Dictionary — structured schema/rule data for the room-capacity task.
+#
+# This file is a machine-readable representation of source schemas,
+# normalization rules, identity mappings, precedence, revision semantics,
+# output schemas, metrics, and invariants.
+#
+# The authoritative semantic prose is fact_contract.md. Where this dictionary
+# and the contract disagree, the contract wins. This file must not be treated
+# as a source of new rules; it only restates the contract in structured form.
+
+[meta]
+contract = "fact_contract.md"
+dictionary_version = "26A"
+
+# ---------------------------------------------------------------------------
+# Input sources
+# ---------------------------------------------------------------------------
+
+[input_sources]
+scheduling_events = { path = "/app/data/scheduling_events.csv", format = "csv", role = "core reservation/revision feed" }
+reservation_adjustments = { path = "/app/data/reservation_adjustments.ndjson", format = "jsonl", role = "late adjustment/correction/release feed" }
+clinic_directory = { path = "/app/data/clinic_directory.csv", format = "csv", role = "canonical clinic ids and aliases" }
+room_directory = { path = "/app/data/room_directory.csv", format = "csv", role = "clinic-scoped canonical room ids and aliases" }
+
+# ---------------------------------------------------------------------------
+# Event source schema (scheduling_events.csv and reservation_adjustments.ndjson
+# share one logical event schema)
+# ---------------------------------------------------------------------------
+
+[schema.event]
+event_id = { type = "string", nullable = false, note = "opaque id, case-sensitive, trimmed; dedup key" }
+booking_id = { type = "string", nullable = false, note = "opaque id, case-sensitive, trimmed; booking key" }
+revision = { type = "integer", nullable = false, min = 0, note = "non-negative whole number" }
+status = { type = "enum", values = ["booked", "cancelled", "voided"], nullable = false }
+clinic_id = { type = "string", nullable = false, note = "canonicalized per section 3" }
+room_id = { type = "string", nullable = false, note = "canonicalized per section 3; unique only within a clinic" }
+provider_id = { type = "string", nullable = true, note = "descriptive attribute" }
+source = { type = "string", nullable = true, note = "descriptive attribute; adjustment feed uses ADJUSTMENT" }
+start_date = { type = "date", format = "YYYY-MM-DD", nullable = false }
+start_time = { type = "time", format = "HH:MM or HH:MM:SS", nullable = false, note = "seconds truncated to minute" }
+end_date = { type = "date", format = "YYYY-MM-DD", nullable = false }
+end_time = { type = "time", format = "HH:MM or HH:MM:SS", nullable = false, note = "seconds truncated to minute" }
+created_ts = { type = "timestamp", format = "YYYY-MM-DD HH:MM:SS", nullable = false }
+
+[schema.clinic_directory]
+canonical_clinic_id = { type = "string", nullable = false }
+clinic_alias = { type = "string", nullable = false }
+
+[schema.room_directory]
+clinic_id = { type = "string", nullable = false, note = "canonical clinic code (room scope)" }
+room_alias = { type = "string", nullable = false }
+canonical_room_id = { type = "string", nullable = false }
+
+# ---------------------------------------------------------------------------
+# Normalization
+# ---------------------------------------------------------------------------
+
+[normalization]
+trim = "all fields"
+tags_compared_case_insensitive = ["clinic_id", "room_id", "provider_id", "source", "status"]
+tags_canonical_form = "trimmed upper case"
+ids_case_sensitive = ["event_id", "booking_id"]
+revision_type = "non-negative integer"
+date_format = "YYYY-MM-DD"
+time_format = "HH:MM or HH:MM:SS"
+seconds_truncated_to_minute = true
+local_wall_clock = true
+timezone_conversion = false
+malformed_detection_after_dedup = true
+malformed_rules_uniform_across_sources = true
+
+# ---------------------------------------------------------------------------
+# Event identity / dedup
+# ---------------------------------------------------------------------------
+
+[identity.event]
+event_id_dedup = "first copy in source/file order wins across all event sources"
+duplicate_events_removed_metric = "duplicate_events_removed"
+
+# ---------------------------------------------------------------------------
+# Clinic identity resolution
+# ---------------------------------------------------------------------------
+
+[identity.clinic]
+normalize_first = true
+mapping_source = "clinic_directory.csv"
+lookup_field = "clinic_alias"
+target_field = "canonical_clinic_id"
+fallback = "normalized raw token"
+fuzzy_matching = false
+order_relative_to_room = "clinic MUST be resolved before room (room aliases are clinic-scoped)"
+
+# ---------------------------------------------------------------------------
+# Room identity resolution
+# ---------------------------------------------------------------------------
+
+[identity.room]
+normalize_first = true
+clinic_resolution = "resolve clinic first to a canonical clinic id"
+mapping_source = "room_directory.csv"
+lookup_key = ["clinic_id", "room_alias"]
+target_field = "canonical_room_id"
+fallback = "normalized raw room token"
+fuzzy_matching = false
+clinic_scoped = true
+same_alias_different_clinics_may_differ = true
+
+# ---------------------------------------------------------------------------
+# Precedence
+# ---------------------------------------------------------------------------
+
+[precedence.identity]
+clinic_id = ["clinic-directory mapping", "normalized raw event token fallback"]
+room_id = ["clinic-scoped room-directory mapping", "normalized raw event token fallback"]
+
+[precedence.booking_content]
+status_start_end_room_clinic_provider_source = "authoritative collision winner for the revision"
+collision_winner = "latest created_ts across ALL validated surviving rows from all event sources"
+collision_tie_break = "greatest event_id compared as strings"
+collision_includes_voided = true
+
+[precedence.effective_revision]
+rule = "highest-numbered authoritative revision whose status is not VOIDED"
+description_attributes = "provider_id and source are descriptive; never partition capacity"
+
+# ---------------------------------------------------------------------------
+# Revision / collision / effective semantics
+# ---------------------------------------------------------------------------
+
+[revision]
+collision_before_effective = true
+authoritative_row_is_sole_content = true
+collision_losers_remain_in_validated_population = true
+voided_revision_never_provides_final_state_room_clinic_interval = true
+no_effective_revision_if_all_voided = true
+cancelled_effective_stays_non_active = true
+revision_numbers_need_not_be_contiguous = true
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+
+[outputs.daily_room_capacity_facts]
+path = "/app/output/daily_room_capacity_facts.csv"
+sort = ["room_id", "clinic_id", "calendar_date"]
+columns = ["room_id", "clinic_id", "calendar_date", "blocked_minutes"]
+only_rows_with_blocked_minutes_ge_1 = true
+
+[outputs.effective_bookings]
+path = "/app/output/effective_bookings.csv"
+columns = ["booking_id", "status", "clinic_id", "room_id", "start_ts", "end_ts", "provider_id", "source", "effective_revision"]
+one_row_per_booking_with_effective_revision = true
+content_only_from_effective_authoritative_revision = true
+
+[outputs.booking_state_history]
+path = "/app/output/booking_state_history.csv"
+columns = ["booking_id", "revision", "status", "clinic_id", "room_id", "start_ts", "end_ts", "effective_from", "effective_to", "is_effective"]
+one_row_per_authoritative_revision = true
+is_effective_single_row_when_effective_exists = true
+all_voided_booking_has_no_effective_row = true
+
+[outputs.capacity_reconciliation]
+path = "/app/output/capacity_reconciliation.csv"
+columns = ["room_id", "clinic_id", "calendar_date", "effective_booking_count", "raw_interval_minutes", "blocked_minutes", "overlap_minutes"]
+conservation_invariant = "raw_interval_minutes = blocked_minutes + overlap_minutes"
+
+[outputs.quality_summary]
+path = "/app/output/quality_summary.json"
+format = "json"
+deterministic_integer_metrics = true
+
+# ---------------------------------------------------------------------------
+# Canonical intermediate ledger
+# ---------------------------------------------------------------------------
+
+[outputs.canonical_ledger]
+path = "/app/work/canonical_events.csv"
+agent_produced_work_artifact = true
+not_a_required_user_facing_output = true
+columns = ["event_id", "booking_id", "revision", "status", "clinic_id", "room_id", "provider_id", "source", "start_ts", "end_ts", "created_ts"]
+event_id_unique_after_dedup = true
+valid_canonical_datetime_values = true
+canonical_room_belongs_to_resolved_clinic_when_mapped = true
+no_downstream_dependency_on_source_specific_format = true
+
+# ---------------------------------------------------------------------------
+# Quality metric categories (final key set fixed in implementation phases)
+# ---------------------------------------------------------------------------
+
+[metrics.event_quality]
+candidates = ["total_raw_events", "duplicate_events_removed", "malformed_rows_rejected", "adjustment_rows_valid", "adjustment_rows_rejected"]
+
+[metrics.identity_quality]
+candidates = ["clinic_aliases_resolved", "room_aliases_resolved", "identity_tokens_unresolved"]
+
+[metrics.revision_quality]
+candidates = ["total_booking_ids", "voided_revisions", "bookings_with_effective_revision", "active_bookings", "cancelled_bookings", "bookings_with_no_effective_revision", "multi_day_active_bookings"]
+
+[metrics.capacity_quality]
+candidates = ["total_blocked_minutes", "room_clinic_days_with_overlap", "overlap_minutes_total"]
+
+[metrics.reconciliation_quality]
+candidates = ["reconciled_room_days", "reconciliation_mismatches"]
+
+# ---------------------------------------------------------------------------
+# Cross-artifact invariants
+# ---------------------------------------------------------------------------
+
+[invariants]
+effective_booking_identity = "every effective_bookings row corresponds to exactly one effective revision"
+history_current_state_identity = "history row with is_effective=1 equals the effective_bookings row"
+capacity_provenance = "every fact blocked minute is explainable by at least one effective BOOKED booking interval"
+capacity_reconciliation = "raw_interval_minutes = blocked_minutes + overlap_minutes"
+fact_reconciliation_equality = "reconciliation.blocked_minutes equals daily_room_capacity_facts.blocked_minutes"
+effective_booking_count = "reconciliation.effective_booking_count equals independently derived count of contributing effective BOOKED bookings"
+shared_room = "provider_id/source do not create separate capacity timelines"
+superseded_state = "superseded revisions never contribute capacity"
+no_phantom_capacity = "cancelled or all-voided effective states never contribute blocked minutes"
+deterministic_ordering = "all output sort orders and JSON key orders are fixed"

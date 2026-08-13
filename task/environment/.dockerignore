@@ -3,6 +3,14 @@
 **/.git/
 .gitignore
 
+# Hidden / non-public content (kept out of the agent image)
+tests/
+**/tests/
+solution/
+**/solution/
+expected/
+**/expected/
+
 # OS cruft
 .DS_Store
 Thumbs.db

@@ -10,17 +10,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 python3
     && pip install --no-cache-dir --break-system-packages pytest==8.4.1 pytest-json-ctrf==0.3.5 \
     && rm -rf /var/lib/apt/lists/*
 
-# Task input data: the public scheduling export and the authoritative contract.
-# The agent is expected to read both (data/ contains scheduling_events.csv and
-# docs/fact_contract.md). No expected outputs or solution code live here.
+# Task input data: the public operational sources and the authoritative
+# contract/dictionary. The agent is expected to read all of them (data/
+# contains scheduling_events.csv, reservation_adjustments.ndjson,
+# clinic_directory.csv, room_directory.csv, and docs/). No expected outputs or
+# solution code live here.
 COPY data /app/data
 
-# Broken starter the agent must repair. It ships as the implementation under /app
-# and reads /app/data, writing its two required artifacts to /app/output.
+# Starter the agent must repair. It ships as the implementation under /app
+# and reads /app/data, writing its five required artifacts to /app/output.
 COPY prepare_facts.py /app/prepare_facts.py
 
-# Output directory for the two required artifacts. Made world-writable so the
-# agent can always write regardless of runtime user.
-RUN mkdir -p /app/output && chmod 1777 /app/output
+# Output directory for the required artifacts and a scratch work area.
+# Both are made world-writable so the agent can always write regardless of
+# runtime user.
+RUN mkdir -p /app/output /app/work && chmod 1777 /app/output /app/work
 
 WORKDIR /app

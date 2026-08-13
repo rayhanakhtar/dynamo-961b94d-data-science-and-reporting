@@ -1,21 +1,32 @@
 # Fact Contract — Daily Room Capacity Facts
 
-This document is the authoritative specification for converting the ambulatory
-scheduling / exam-room reservation event export into a daily room-capacity fact
-table and a data-quality summary. A correct implementation must satisfy every
-rule in this document. When this contract and any other description disagree,
-this contract wins.
+This document is the authoritative specification for converting ambulatory
+scheduling / exam-room reservation operational information into a daily
+room-capacity fact table, an effective-booking snapshot, a booking-state
+history, a capacity reconciliation, and a categorized data-quality summary.
+A correct implementation must satisfy every rule in this document. When this
+contract and any other description disagree, this contract wins.
 
 ## 1. Inputs
 
+The task consumes four source artifacts plus this contract and the structured
+dictionary. All sources together constitute one operational event and identity
+universe; a correct implementation must consume every source.
+
 | Path | Contents |
 |------|----------|
-| `/app/data/scheduling_events.csv` | The event export (UTF-8 CSV, one header row, then one record per line). |
-| `/app/data/docs/fact_contract.md` | This contract. |
+| `/app/data/scheduling_events.csv` | The core reservation/revision feed (UTF-8 CSV, one header row, then one record per line). |
+| `/app/data/reservation_adjustments.ndjson` | Late adjustment/correction/release feed (JSON Lines). |
+| `/app/data/clinic_directory.csv` | Canonical clinic IDs and aliases. |
+| `/app/data/room_directory.csv` | Clinic-scoped canonical room IDs and aliases. |
+| `/app/data/docs/fact_contract.md` | This contract (authoritative semantics). |
+| `/app/data/docs/fact_dictionary.toml` | Structured machine-readable schema/rule data (must agree with this contract). |
 
-## 2. Input schema
+## 2. Input schemas
 
-The export has exactly these 13 columns, in this order:
+### 2.1 scheduling_events.csv
+
+The core feed has exactly these 13 columns, in this order:
 
 | Column | Description | Example |
 |--------|-------------|---------|
@@ -32,6 +43,54 @@ The export has exactly these 13 columns, in this order:
 | `end_date` | End date of the booked interval, `YYYY-MM-DD` | `2026-01-06` |
 | `end_time` | End time of the booked interval, `HH:MM` or `HH:MM:SS` | `12:00` |
 | `created_ts` | When the row was recorded, `YYYY-MM-DD HH:MM:SS` | `2026-01-05 08:15:00` |
+
+### 2.2 reservation_adjustments.ndjson
+
+A JSON Lines file: one UTF-8 JSON object per line, no header row. Each object
+carries the same logical event fields as Section 2.1 and is subject to the same
+normalization and malformed-input rules (Sections 3 and 16). The `source` field
+of every adjustment row identifies this feed (for example `ADJUSTMENT`).
+
+Required object keys and types:
+
+| Key | Type | Example |
+|-----|------|---------|
+| `event_id` | string | `EV-0005043` |
+| `booking_id` | string | `BK-5201` |
+| `revision` | integer | `2` |
+| `status` | string | `cancelled` |
+| `clinic_id` | string | `CL-A` |
+| `room_id` | string | `RM-15` |
+| `provider_id` | string | `P077` |
+| `source` | string | `ADJUSTMENT` |
+| `start_date` | string (`YYYY-MM-DD`) | `2026-04-28` |
+| `start_time` | string (`HH:MM` or `HH:MM:SS`) | `09:00` |
+| `end_date` | string (`YYYY-MM-DD`) | `2026-04-28` |
+| `end_time` | string (`HH:MM` or `HH:MM:SS`) | `10:00` |
+| `created_ts` | string (`YYYY-MM-DD HH:MM:SS`) | `2026-04-26 11:00:00` |
+
+A row is malformed (Section 16) if any required key is missing or unparsable.
+
+### 2.3 clinic_directory.csv
+
+UTF-8 CSV, one header row, then one record per line. Columns:
+
+| Column | Description |
+|--------|-------------|
+| `canonical_clinic_id` | Canonical clinic code. |
+| `clinic_alias` | A token that maps to the canonical clinic. |
+
+### 2.4 room_directory.csv
+
+UTF-8 CSV, one header row, then one record per line. Columns:
+
+| Column | Description |
+|--------|-------------|
+| `clinic_id` | Canonical clinic code (the room scope). |
+| `room_alias` | A room token that maps to the canonical room. |
+| `canonical_room_id` | Canonical room code within that clinic. |
+
+Both directories use the field-normalization rules of Section 3.
 
 ## 3. Field normalization
 
@@ -50,12 +109,15 @@ The export has exactly these 13 columns, in this order:
 ## 4. Event identity and duplicate events
 
 - A raw event is identified by its `event_id`.
-- The export may contain the same raw event more than once (an artifact of how
-  the export was assembled). For each `event_id`, only the first copy in file
-  order is kept; every later copy of the same `event_id` is a duplicate and is
-  discarded. Each discarded copy counts toward `duplicate_events_removed`
-  (Section 17). A row kept by this deduplication is said to **survive
-  deduplication**; a discarded copy does not.
+- Any event source may contain the same raw event more than once (an artifact
+  of how the operational system was assembled). Deduplication is applied to
+  the union of all event rows across all event sources: `event_id` values are
+  globally unique across `scheduling_events.csv` and
+  `reservation_adjustments.ndjson`. For each `event_id`, only the first copy in
+  source/file order is kept; every later copy of the same `event_id` is a
+  duplicate and is discarded. Each discarded copy counts toward
+  `duplicate_events_removed` (Section 17). A row kept by this deduplication is
+  said to **survive deduplication**; a discarded copy does not.
 
 ## 5. Booking identity
 
@@ -66,6 +128,10 @@ The export has exactly these 13 columns, in this order:
 - If two or more rows carry the same `(booking_id, revision)` pair, the row with
   the latest `created_ts` is authoritative for that revision; if `created_ts`
   ties, the row with the greatest `event_id` (compared as strings) wins.
+  Collision resolution operates on the union of validated surviving rows across
+  **all** event sources (Section 4): a `scheduling_events.csv` row and a
+  `reservation_adjustments.ndjson` row for the same `(booking_id, revision)`
+  compete under the same rule.
 - Collision resolution is applied before effective-revision selection: the
   **authoritative row** for a revision (the row chosen above) is that
   revision's sole content for effective-revision selection and for all
@@ -196,7 +262,9 @@ Malformed rows are excluded from all capacity computation and are counted in
 `malformed_rows_rejected` (Section 17). Rejecting a malformed row never
 invalidates other, well-formed rows of the same booking. Malformed-row detection
 is applied to the rows that survive deduplication (Section 4): the surviving
-copy of a duplicated event is the one validated.
+copy of a duplicated event is the one validated. The malformed rules apply
+uniformly to every event source; an adjustment row that fails these rules is
+rejected in the same way as a core-feed row.
 
 ## 17. Quality summary
 
@@ -209,7 +277,8 @@ The pipeline transforms the raw export through a sequence of distinct
 populations. Each stage produces a population that is a subset of, or a
 refinement of, the previous one:
 
-1. **raw rows** — every row in `/app/data/scheduling_events.csv`.
+1. **raw rows** — every row across all event sources (`scheduling_events.csv`
+   and `reservation_adjustments.ndjson`).
 2. **deduplicated survivors** — raw rows minus every copy of an `event_id`
    beyond the first (Section 4).
 3. **validated survivors** — deduplicated survivors that pass the
@@ -234,7 +303,7 @@ population counts: each metric uses only its stated population.
 
 | Key | Meaning | Population |
 |-----|---------|-----------|
-| `total_raw_events` | Number of data rows in `/app/data/scheduling_events.csv`, including duplicates and malformed rows. | 1. raw rows. |
+| `total_raw_events` | Number of data rows across all event sources, including duplicates and malformed rows. | 1. raw rows. |
 | `duplicate_events_removed` | Number of rows discarded by the `event_id` deduplication (every copy of an `event_id` beyond the first). | transition 1 to 2. |
 | `malformed_rows_rejected` | Number of rows, after deduplication, that fail the malformed-input rules of Section 16. | transition 2 to 3. |
 | `total_booking_ids` | Number of distinct `booking_id` values in the validated survivors. | 3. validated survivors. |
@@ -272,8 +341,214 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
 
 - All dates and times are local wall-clock time; no time zone, DST, or calendar
   other than the Gregorian `YYYY-MM-DD` is involved.
-- The export is the complete set of events; no other source of bookings exists.
-- Duplicate, malformed, and superseded content never add capacity and never
-  create output rows.
-- The pipeline produces exactly two outputs: the fact table CSV and the quality
-  summary JSON, at the paths given in Sections 15 and 17.
+- The four source artifacts together are the complete operational event and
+  identity data; no other source of bookings or room/clinic identity exists.
+- Duplicate, malformed, superseded, cancelled, and voided content never add
+  capacity and never create output rows.
+- The pipeline produces the outputs at the paths given in Sections 15, 24, 25,
+  and 26, plus the quality summary JSON of Section 17.
+
+## 20. Clinic identity resolution
+
+- Every clinic token carried by an event row is first normalized per Section 3
+  (trimmed, case-insensitive, canonical upper-case form).
+- The normalized clinic token is looked up in `clinic_directory.csv`
+  (Section 2.3) as a `clinic_alias`. If a mapping exists, the canonical clinic
+  is the corresponding `canonical_clinic_id`.
+- If the normalized token is not listed as an alias, the canonical clinic is the
+  normalized token itself (deterministic fallback).
+- No fuzzy or approximate matching is ever used.
+- Clinic resolution MUST precede room resolution (Section 21), because room
+  aliases are scoped by clinic: the same room alias may map to different
+  canonical rooms in different clinics.
+
+## 21. Room identity resolution
+
+- Every room token carried by an event row is first normalized per Section 3.
+- The room's clinic is resolved first (Section 20) to a canonical clinic.
+- The pair `(canonical_clinic_id, normalized_room_token)` is looked up in
+  `room_directory.csv` (Section 2.4). If a mapping exists, the canonical room is
+  the corresponding `canonical_room_id`.
+- Otherwise the canonical room is the normalized room token (deterministic
+  fallback).
+- A room alias may legitimately map to different canonical rooms under different
+  canonical clinics.
+- No fuzzy or approximate matching is ever used.
+
+## 22. Source / attribute precedence
+
+- **Canonical identity precedence** (Section 20 and Section 21):
+  - `clinic_id`: clinic-directory mapping > normalized raw event token fallback.
+  - `room_id`: clinic-scoped room-directory mapping > normalized raw event token
+    fallback.
+- **Booking revision content precedence:** for each `(booking_id, revision)`,
+  the authoritative row (Section 5) supplies `status`, `start_ts`, `end_ts`,
+  `clinic_id`, `room_id`, `provider_id`, and `source`. The winner is the row
+  with the latest `created_ts` across ALL validated surviving rows from all
+  event sources; ties are broken by the greatest `event_id` (compared as
+  strings); the winner is selected regardless of status, including `voided`.
+- **Effective-revision precedence:** the effective revision is the
+  highest-numbered authoritative revision whose status is not `voided`
+  (Section 7).
+- `provider_id` and `source` are descriptive attributes only; they never
+  partition the capacity timeline (Section 13).
+- Identity resolution, collision precedence, and effective-revision precedence
+  are distinct stages and must not be conflated.
+
+## 23. Canonical event ledger
+
+- A canonical intermediate representation is produced from all event sources:
+  `/app/work/canonical_events.csv`. It is an agent-produced work artifact and is
+  not itself a required user-facing output.
+- Required logical columns:
+
+  | Column | Semantics |
+  |--------|-----------|
+  | `event_id` | Surviving validated event id (unique). |
+  | `booking_id` | Booking id. |
+  | `revision` | Revision number. |
+  | `status` | Canonical status. |
+  | `clinic_id` | Canonical clinic id (Section 20). |
+  | `room_id` | Canonical room id (Section 21). |
+  | `provider_id` | Descriptive provider id. |
+  | `source` | Source tag (attribute). |
+  | `start_ts` | Canonical start instant. |
+  | `end_ts` | Canonical end instant. |
+  | `created_ts` | Recorded timestamp. |
+
+- Semantic population: normalized, deduplicated, validated, and
+  identity-resolved rows across all event sources.
+- Invariants:
+  - `event_id` is unique after deduplication.
+  - every accepted row has valid canonical date/time values;
+  - when a directory mapping exists, the canonical room belongs to the resolved
+    canonical clinic;
+  - no downstream stage depends on a source-specific physical format or field
+    name.
+
+## 24. Effective booking snapshot
+
+`/app/output/effective_bookings.csv`
+
+- Logical schema:
+
+  | Column | Semantics |
+  |--------|-----------|
+  | `booking_id` | Booking id. |
+  | `status` | Effective status. |
+  | `clinic_id` | Canonical clinic of the effective revision. |
+  | `room_id` | Canonical room of the effective revision. |
+  | `start_ts` | Effective interval start. |
+  | `end_ts` | Effective interval end. |
+  | `provider_id` | Descriptive provider id. |
+  | `source` | Source tag (attribute). |
+  | `effective_revision` | The revision number that is effective. |
+
+- Population: one row per `booking_id` that has an effective revision; content
+  comes only from the effective authoritative revision (Section 7).
+- `booked` effective bookings are the capacity-driving population; `cancelled`
+  effective bookings remain represented for state/quality semantics but do not
+  contribute blocked capacity.
+- This artifact is the canonical current-state snapshot.
+
+## 25. Booking state history
+
+`/app/output/booking_state_history.csv`
+
+- Logical schema:
+
+  | Column | Semantics |
+  |--------|-----------|
+  | `booking_id` | Booking id. |
+  | `revision` | Revision number. |
+  | `status` | Authoritative status of this revision. |
+  | `clinic_id` | Canonical clinic of this revision. |
+  | `room_id` | Canonical room of this revision. |
+  | `start_ts` | Interval start of this revision. |
+  | `end_ts` | Interval end of this revision. |
+  | `effective_from` | Deterministic start of this revision's effective span (the authoritative row's `created_ts`). |
+  | `effective_to` | Deterministic end of this revision's effective span: the `created_ts` of the next higher-numbered authoritative revision of the same booking, or empty for the highest-numbered authoritative revision. |
+  | `is_effective` | `1` exactly for the current effective revision when one exists, else `0`. |
+
+- Population: one row per authoritative revision; voided authoritative
+  revisions are represented according to the history semantics below.
+- `is_effective = 1` marks exactly the current effective revision when one
+  exists; a booking whose every authoritative revision is `voided` has no
+  effective row (`is_effective` is never `1` for it).
+- `effective_from`/`effective_to` are deterministic and derived from the
+  authoritative revision chronology: `effective_from` is the authoritative
+  row's `created_ts`, and `effective_to` is the `created_ts` of the next
+  higher-numbered authoritative revision of the same booking, or empty for the
+  highest-numbered authoritative revision.
+
+## 26. Capacity reconciliation
+
+`/app/output/capacity_reconciliation.csv`
+
+- Logical schema:
+
+  | Column | Semantics |
+  |--------|-----------|
+  | `room_id` | Canonical room id. |
+  | `clinic_id` | Canonical clinic id. |
+  | `calendar_date` | Calendar date. |
+  | `effective_booking_count` | Number of effective BOOKED bookings contributing at least one minute on that room-day. |
+  | `raw_interval_minutes` | Sum of the per-day blocked minutes for each contributing effective BOOKED booking before union-merging. |
+  | `blocked_minutes` | Shared-room union minutes, equal to the corresponding `daily_room_capacity_facts.csv` value. |
+  | `overlap_minutes` | `raw_interval_minutes - blocked_minutes`. |
+
+- Conservation invariant: `raw_interval_minutes =
+  blocked_minutes + overlap_minutes` for every row.
+
+## 27. Cross-artifact invariants
+
+- **A. Effective-booking identity:** every `effective_bookings.csv` row
+  corresponds to exactly one effective revision in the authoritative revision
+  ledger.
+- **B. History/current-state identity:** for every booking with an effective
+  revision, the history row with `is_effective = 1` equals the corresponding
+  `effective_bookings.csv` row.
+- **C. Capacity provenance:** every fact-table blocked minute is explainable by
+  at least one effective BOOKED booking interval.
+- **D. Capacity reconciliation:** `raw_interval_minutes =
+  blocked_minutes + overlap_minutes`.
+- **E. Fact/reconciliation equality:** `reconciliation.blocked_minutes` equals
+  `daily_room_capacity_facts.blocked_minutes` for the same room-day.
+- **F. Effective-booking count:** `reconciliation.effective_booking_count`
+  equals the independently derived count of effective BOOKED bookings
+  contributing at least one minute that day.
+- **G. Shared-room invariant:** `provider_id`/`source` differences do not create
+  separate capacity timelines.
+- **H. Superseded-state invariant:** superseded revisions never contribute
+  capacity.
+- **I. No phantom capacity:** `cancelled` or all-`voided` effective states never
+  contribute blocked minutes.
+- **J. Deterministic ordering:** all output sort orders and JSON key orders are
+  fixed.
+
+## 28. Structured dictionary
+
+- `fact_dictionary.toml` (Section 1) is a machine-readable representation of
+  source schemas, normalization rules, identity mappings, precedence, revision
+  semantics, output schemas, metrics, and invariants.
+- It must not contradict this contract; this contract remains the authoritative
+  semantic prose. Where the dictionary and contract disagree, this contract
+  wins.
+
+## 29. Quality metric categories
+
+- The quality summary (Section 17) is organized into deterministic categories:
+
+  | Category | Coverage |
+  |----------|----------|
+  | `event_quality` | raw/duplicate/malformed counts, adjustment validity. |
+  | `identity_quality` | clinic and room alias resolution counts. |
+  | `revision_quality` | booking-level revision/state counts. |
+  | `capacity_quality` | blocked-minute and overlap totals. |
+  | `reconciliation_quality` | reconciled room-day counts and mismatches. |
+
+- Every metric has an exact source population, an exact aggregation, and an
+  exact deterministic integer type.
+- The exact key set and values are finalized in the implementation phases; the
+  twelve keys already specified in Section 17 remain the current validated
+  quality-summary semantics.

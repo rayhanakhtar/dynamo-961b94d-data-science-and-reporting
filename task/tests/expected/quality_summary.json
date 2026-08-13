@@ -1,14 +1,32 @@
 {
-  "total_raw_events": 1064,
-  "duplicate_events_removed": 43,
-  "malformed_rows_rejected": 20,
-  "total_booking_ids": 757,
-  "voided_revisions": 50,
-  "bookings_with_effective_revision": 753,
-  "active_bookings": 644,
-  "cancelled_bookings": 109,
-  "bookings_with_no_effective_revision": 4,
-  "multi_day_active_bookings": 12,
-  "room_clinic_days_with_overlap": 46,
-  "total_blocked_minutes": 55189
+  "event_quality": {
+    "total_raw_events": 1083,
+    "duplicate_events_removed": 43,
+    "malformed_rows_rejected": 20,
+    "adjustment_rows_valid": 17,
+    "adjustment_rows_rejected": 0
+  },
+  "identity_quality": {
+    "clinic_aliases_resolved": 1020,
+    "room_aliases_resolved": 1020,
+    "identity_tokens_unresolved": 0
+  },
+  "revision_quality": {
+    "total_booking_ids": 764,
+    "voided_revisions": 52,
+    "bookings_with_effective_revision": 759,
+    "active_bookings": 647,
+    "cancelled_bookings": 112,
+    "bookings_with_no_effective_revision": 5,
+    "multi_day_active_bookings": 12
+  },
+  "capacity_quality": {
+    "total_blocked_minutes": 55159,
+    "room_clinic_days_with_overlap": 46,
+    "overlap_minutes_total": 4110
+  },
+  "reconciliation_quality": {
+    "reconciled_room_days": 275,
+    "reconciliation_mismatches": 0
+  }
 }

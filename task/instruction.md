@@ -1,18 +1,15 @@
 # Task
 
-Repair `/app/prepare_facts.py` to convert the scheduling and reservation
-sources into analysis-ready room-capacity outputs, exactly as specified by
-the authoritative contract at `/app/data/docs/fact_contract.md`, which is the
-sole specification of correct behavior; where anything else disagrees, the
-contract wins.
+Prepare analysis-ready ambulatory room-capacity outputs from the supplied
+operational scheduling sources, following the authoritative contract.
 
 `/app/prepare_facts.py` is the only file you must produce; inputs and contract
 are fixed.
 
 ## Objective
 
-Read every operational source under `/app/data/`, apply every contract rule,
-and write the five required outputs under `/app/output/`.
+Read every operational source under `/app/data/`, apply the contract's
+semantic rules, and write the five required outputs under `/app/output/`.
 
 ## Inputs
 
@@ -38,13 +35,18 @@ Write exactly these five files:
 4. `/app/output/capacity_reconciliation.csv`
 5. `/app/output/quality_summary.json`
 
-Each artifact's schema, population, sort order, invariants, and
-cross-artifact consistency are defined in the contract.
+All five outputs are required and must conform exactly to the schemas,
+populations, invariants, and sort orders in the contract.
 
 ### quality_summary.json schema
 
-`/app/output/quality_summary.json` is a single UTF-8 JSON object with exactly
-five top-level categories, in this order:
+`/app/output/quality_summary.json` is a single JSON object with exactly these
+top-level categories, in this order:
+
+`event_quality`, `identity_quality`, `revision_quality`,
+`capacity_quality`, `reconciliation_quality`.
+
+Each category is an object with exactly these keys, in this order:
 
 ```json
 {
@@ -81,68 +83,18 @@ five top-level categories, in this order:
 }
 ```
 
-Each category is an object with the exact keys above, in the exact order
-shown. Every value is an exact integer (no booleans, floats, `NaN`, or
-`Infinity`); there are no extra categories or keys. The population, filtering
-rule, and aggregation of every metric are defined in contract Section 17;
-category order, key order, and integer constraints are fixed. In particular,
-`voided_revisions` counts validated surviving rows with status `voided`,
-including VOIDED rows that later lose a revision collision.
+All metric values are exact integers; there are no extra categories or keys;
+JSON serialization is deterministic. The population and aggregation of every
+metric are defined in contract Section 17.
 
-## Processing Requirements
+## Contract Authority
 
-1. **Source parsing and normalization.** Parse each feed (CSV and JSON
-   Lines): trim fields, upper-case categorical tags, keep `event_id`/
-   `booking_id` opaque, parse revision/date/time/timestamp truncating seconds
-   to the minute, and normalize both feeds to one event shape, preserving
-   source provenance.
-2. **Deduplication.** Keep the first copy of each `event_id` across the
-   combined event universe; discard later copies.
-3. **Validation.** Reject rows failing the contract's malformed rules after
-   deduplication; count them in the quality report.
-4. **Clinic identity resolution.** Resolve each clinic token via the clinic
-   directory to a canonical clinic ID, falling back to the normalized token;
-   clinic resolution precedes room resolution.
-5. **Room identity resolution.** Resolve each room token via the room
-   directory to a canonical room ID scoped by its canonical clinic, falling
-   back to the normalized token; the same alias may map to different rooms in
-   different clinics.
-6. **Cross-source collision.** For every `(booking_id, revision)`, select one
-   authoritative row: latest `created_ts`, ties broken by greatest `event_id`
-   (as a string), from all validated rows across all sources. VOIDED rows
-   participate in collision resolution.
-7. **Effective revision.** For each booking, select the highest-numbered
-   authoritative revision whose status is not VOIDED; if all are VOIDED, the
-   booking has no effective revision.
-8. **Effective bookings snapshot.** Emit one row per booking with an effective
-   revision, using only that revision's status, canonical room/clinic,
-   interval, provider, and source.
-9. **Booking state history.** Emit one row per authoritative revision with
-   deterministic `effective_from`/`effective_to` and an `is_effective` flag
-   marking exactly the current effective revision when one exists.
-10. **Active state and materialization.** Only effective BOOKED bookings
-    contribute capacity. Intervals are half-open `[start, end)`; a minute
-    belongs to the day it starts in; zero-length intervals block nothing.
-11. **Shared room/clinic union.** All active bookings on the same
-    `(clinic_id, room_id)` share one timeline; blocked minutes are the union,
-    never the sum. `provider_id` and `source` never partition capacity.
-12. **Daily facts.** For each room/clinic/day with at least one blocked
-    minute, emit `blocked_minutes`.
-13. **Capacity reconciliation.** For each room/clinic/day, report effective
-    booking count, raw interval minutes, blocked minutes, and overlap
-    minutes, satisfying `raw = blocked + overlap`.
-14. **Quality summary.** Produce the deterministic categorized
-    `quality_summary.json` per the schema above.
+`/app/data/docs/fact_contract.md` is the authoritative specification for all
+processing, schema, population, revision, identity, capacity,
+reconciliation, and quality rules. Follow it for the complete semantics.
 
-## Determinism Requirements
+## Determinism and Completion
 
-Two runs on the same inputs must produce identical outputs: identical CSV
-rows (values and order) and an identical JSON object (keys, order, values).
-Sort and JSON key orders are fixed by the contract; internal ordering must
-not affect output.
-
-## Completion Criteria
-
-The task is complete when `/app/prepare_facts.py` runs successfully and
-deterministically produces the five required outputs conforming exactly to
-the contract's schemas, populations, invariants, and sort orders.
+Produce all five required files in the specified schemas and ordering. Two
+runs on the same inputs must produce identical outputs. Outputs must satisfy
+the cross-artifact invariants defined by `fact_contract.md`.

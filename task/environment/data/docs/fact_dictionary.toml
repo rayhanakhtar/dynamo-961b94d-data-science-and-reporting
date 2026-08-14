@@ -77,10 +77,13 @@ malformed_rules_uniform_across_sources = true
 
 [terminology]
 deduplication_survivor = "row retained by the event_id first-occurrence rule (section 4)"
-validated_surviving_row = "deduplication survivor that passes the malformed-input rules of section 16"
-authoritative_collision_winner = "single validated surviving row selected per (booking_id, revision) by latest created_ts then greatest event_id (section 5)"
+validated_surviving_row = "deduplication survivor that passes the malformed-input rules of section 16; the population every quality metric derives from"
+authoritative_collision_winner = "single validated surviving row selected per (booking_id, revision) by latest created_ts then greatest event_id (section 5); supplies revision content to section 7, section 24, section 25"
 collision_losers_remain_validated_survivors = true
-effective_revision = "highest-numbered authoritative collision winner whose status is not VOIDED (section 7)"
+effective_revision = "highest-numbered authoritative collision winner whose status is not VOIDED (section 7); selected by revision number, not created_ts chronology"
+effective_booked_booking = "booking whose effective revision has status BOOKED (sections 7-8)"
+positive_minute_capacity_contributor = "effective BOOKED booking contributing at least one blocked minute on a room/day (sections 10, 12, 14)"
+reconciliation_room_day = "room/clinic/day combination with at least one positive-minute capacity contributor (section 26)"
 
 # ---------------------------------------------------------------------------
 # Event identity / dedup

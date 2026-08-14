@@ -569,6 +569,8 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
 
 - Conservation invariant: `raw_interval_minutes =
   blocked_minutes + overlap_minutes` for every row.
+- A room/day reconciliation row exists only when at least one effective BOOKED
+  booking contributes at least one blocked minute on that day.
 - Rows are sorted ascending by `room_id` (string order), then `clinic_id`
   (string order), then `calendar_date` (chronological).
 

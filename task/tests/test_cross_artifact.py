@@ -91,9 +91,8 @@ def test_cross_reconciliation_booking_count():
                     count += 1
                     break
         assert int(r["effective_booking_count"]) == count, \
-            "effective_booking_count mismatch for %r" % (r["room_id"],
-                                                         r["clinic_id"],
-                                                         r["calendar_date"])
+            "effective_booking_count mismatch for %r" % (
+                (r["room_id"], r["clinic_id"], r["calendar_date"]),)
 
 
 # ---------------------------------------------------------------------------

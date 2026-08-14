@@ -237,8 +237,8 @@ def resolve_clinic(token, clinic_map):
 
 
 def resolve_room(clinic, token, room_map):
-    """Canonical room: directory mapping or token fallback."""
-    return room_map.get(token, token)
+    """Canonical room: clinic-scoped directory mapping or token fallback."""
+    return room_map.get((clinic, token), token)
 
 
 # ---------------------------------------------------------------------------
@@ -252,11 +252,6 @@ def build_ledger(records, clinic_map, room_map):
     the validated event population, how many clinic/room tokens were resolved
     via the directories and how many fell back to the normalized token.
     """
-    # A room is identified by its alias across clinics (single canonical map).
-    global_room_map = {}
-    for (clinic, alias), canonical in room_map.items():
-        global_room_map.setdefault(alias, canonical)
-
     ledger = []
     clinic_resolved = 0
     room_resolved = 0
@@ -266,7 +261,7 @@ def build_ledger(records, clinic_map, room_map):
         raw_room = rec["room_token"]
         canonical_clinic = resolve_clinic(raw_clinic, clinic_map)
         canonical_room = resolve_room(canonical_clinic, raw_room,
-                                      global_room_map)
+                                      room_map)
         clinic_hit = raw_clinic in clinic_map
         room_hit = (canonical_clinic, raw_room) in room_map
         if clinic_hit:
@@ -304,15 +299,18 @@ def build_ledger(records, clinic_map, room_map):
 def resolve_collisions(ledger):
     """Pick the authoritative row for each (booking_id, revision).
 
-    Winner: latest created_ts, ties broken by greatest event_id (compared as
-    strings). VOIDED rows participate in collision resolution.
+    Winner: latest created_ts; ties broken by the greatest event_id.
     """
+    def event_rank(event_id):
+        digits = event_id.split("-")[-1]
+        return int(digits) if digits.isdigit() else event_id
+
     by_key = {}
     for rec in ledger:
         key = (rec["booking_id"], rec["revision"])
         prior = by_key.get(key)
-        if prior is None or (rec["created_ts"], rec["event_id"]) > \
-                (prior["created_ts"], prior["event_id"]):
+        if prior is None or (rec["created_ts"], event_rank(rec["event_id"])) > \
+                (prior["created_ts"], event_rank(prior["event_id"])):
             by_key[key] = rec
     return by_key
 
@@ -497,31 +495,32 @@ def count_multi_day(effective):
 def build_reconciliation(effective):
     """Per room/clinic/day conservation ledger.
 
-    For every (room, clinic, day) with at least one contributing effective
-    BOOKED booking:
-      - effective_booking_count: distinct effective BOOKED bookings with at
-        least one positive blocked minute that day;
-      - raw_interval_minutes: the sum of each contributing booking's per-day
-        minutes before union-merging;
-      - blocked_minutes: the shared-room union minutes;
-      - overlap_minutes: raw_interval_minutes - blocked_minutes.
-
-    This is computed independently from effective state (not by reading the
-    facts artifact), so it can be cross-checked against
-    daily_room_capacity_facts.csv.
+    For every effective BOOKED booking, register it on each calendar day its
+    interval touches; a booking with no blocked minutes still counts as a
+    contributor on the day it starts.
     """
     by_day = defaultdict(lambda: defaultdict(list))
     for rec in effective.values():
         if rec is None or rec["status"] != "BOOKED":
             continue
-        for day, lo, hi in day_segments(rec["start_ts"], rec["end_ts"]):
+        segments = list(day_segments(rec["start_ts"], rec["end_ts"]))
+        if not segments:
+            start = datetime.datetime.strptime(rec["start_ts"], "%Y-%m-%d %H:%M:%S")
+            by_day[(rec["room_id"], rec["clinic_id"], start.date())][
+                rec["booking_id"]].append(None)
+            continue
+        for day, lo, hi in segments:
             by_day[(rec["room_id"], rec["clinic_id"], day)][
                 rec["booking_id"]].append((lo, hi))
 
     rows = []
     for (room_id, clinic_id, day), contrib in by_day.items():
-        raw = sum(union_minutes(iv) for iv in contrib.values())
-        all_intervals = [seg for iv in contrib.values() for seg in iv]
+        raw = 0
+        for intervals in contrib.values():
+            real = [seg for seg in intervals if seg is not None]
+            raw += union_minutes(real)
+        all_intervals = [seg for iv in contrib.values() for seg in iv
+                         if seg is not None]
         blocked = union_minutes(all_intervals)
         rows.append({
             "room_id": room_id,
@@ -670,6 +669,9 @@ def main():
 
     # Stage 3-4-5: identity resolution and canonical ledger.
     ledger, identity_stats = build_ledger(records, clinic_map, room_map)
+
+    # VOIDED revisions are annulled: they never participate downstream.
+    ledger = [row for row in ledger if row["status"] != "VOIDED"]
 
     # Stage 6: cross-source collision resolution.
     authoritative = resolve_collisions(ledger)

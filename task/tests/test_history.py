@@ -104,7 +104,8 @@ def test_history_effective_to_chain(history_artifact, indep):
             # effective_from = authoritative created_ts
             rec = indep["authoritative"].get((r[0], int(r[1])))
             assert rec is not None
-            assert r[7] == rec["created_ts"], "effective_from mismatch %s" % (r[0], r[1])
+            assert r[7] == rec["created_ts"], \
+                "effective_from mismatch %r" % ((r[0], r[1]),)
             if i < len(bid_rows) - 1:
                 nxt = bid_rows[i + 1]
                 assert r[8] == nxt[7], \

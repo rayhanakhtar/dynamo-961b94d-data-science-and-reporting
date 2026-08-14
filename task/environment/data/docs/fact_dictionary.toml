@@ -64,6 +64,8 @@ revision_type = "non-negative integer"
 date_format = "YYYY-MM-DD"
 time_format = "HH:MM or HH:MM:SS"
 seconds_truncated_to_minute = true
+timestamp_output_format = "YYYY-MM-DD HH:MM:SS"
+timestamp_seconds_always_zero_after_truncation = true
 local_wall_clock = true
 timezone_conversion = false
 malformed_detection_after_dedup = true
@@ -162,6 +164,8 @@ path = "/app/output/effective_bookings.csv"
 columns = ["booking_id", "status", "clinic_id", "room_id", "start_ts", "end_ts", "provider_id", "source", "effective_revision"]
 one_row_per_booking_with_effective_revision = true
 content_only_from_effective_authoritative_revision = true
+timestamp_format = "YYYY-MM-DD HH:MM:SS"
+timestamp_seconds_always_zero = true
 
 [outputs.booking_state_history]
 path = "/app/output/booking_state_history.csv"
@@ -169,6 +173,8 @@ columns = ["booking_id", "revision", "status", "clinic_id", "room_id", "start_ts
 one_row_per_authoritative_revision = true
 is_effective_single_row_when_effective_exists = true
 all_voided_booking_has_no_effective_row = true
+timestamp_format = "YYYY-MM-DD HH:MM:SS"
+timestamp_seconds_always_zero = true
 
 [outputs.capacity_reconciliation]
 path = "/app/output/capacity_reconciliation.csv"

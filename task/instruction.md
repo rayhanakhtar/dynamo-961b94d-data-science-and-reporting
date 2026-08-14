@@ -36,7 +36,9 @@ Write exactly these five files:
 5. `/app/output/quality_summary.json`
 
 All five outputs are required and must conform exactly to the schemas,
-populations, invariants, and sort orders in the contract.
+populations, invariants, and sort orders in the contract. Timestamp fields in
+output CSVs use `YYYY-MM-DD HH:MM:SS`; seconds are always `00` after minute
+normalization.
 
 ### quality_summary.json schema
 

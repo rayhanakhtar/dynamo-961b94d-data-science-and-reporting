@@ -105,6 +105,11 @@ Both directories use the field-normalization rules of Section 3.
 - Dates are `YYYY-MM-DD`. Times are `HH:MM` or `HH:MM:SS`; seconds, if present,
   are truncated (floored) to the minute.
 - All times are local wall-clock time. No time-zone conversion is ever applied.
+- In every output artifact, timestamps are serialized as strings in the exact
+  format `YYYY-MM-DD HH:MM:SS`. Because input times are truncated to the
+  minute, normalized output timestamps always have a seconds component equal
+  to `00`. This applies to `start_ts`, `end_ts`, `created_ts`, and every
+  derived timestamp field in the output artifacts.
 
 ### 3.1 Terminology and population vocabulary
 
@@ -485,6 +490,8 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
 
 - Semantic population: normalized, deduplicated, validated, and
   identity-resolved rows across all event sources.
+- `start_ts` and `end_ts` are serialized as `YYYY-MM-DD HH:MM:SS` (Section 3);
+  normalized times always have seconds equal to `00`.
 - Invariants:
   - `event_id` is unique after deduplication.
   - every accepted row has valid canonical date/time values;
@@ -517,6 +524,8 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
   effective bookings remain represented for state/quality semantics but do not
   contribute blocked capacity.
 - This artifact is the canonical current-state snapshot.
+- `start_ts` and `end_ts` are serialized as `YYYY-MM-DD HH:MM:SS` (Section 3);
+  normalized times always have seconds equal to `00`.
 - Rows are sorted ascending by `booking_id` (string order).
 
 ## 25. Booking state history
@@ -548,6 +557,10 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
   collision winner's `created_ts`, and `effective_to` is the `created_ts` of the next
   higher-numbered authoritative collision winner of the same booking, or empty for the
   highest-numbered authoritative collision winner.
+- `start_ts`, `end_ts`, `effective_from`, and `effective_to` are serialized as
+  `YYYY-MM-DD HH:MM:SS` (Section 3); normalized times always have seconds equal
+  to `00`. `effective_to` is empty for the highest-numbered authoritative
+  revision.
 - Rows are sorted ascending by `booking_id` (string order), then by `revision`
   (ascending integer order).
 

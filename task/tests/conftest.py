@@ -14,6 +14,7 @@ from the starter and from the reference oracle.
 import csv
 import json
 import os
+import pathlib
 import datetime
 import collections
 
@@ -443,12 +444,62 @@ OUTPUT_FILES = ["daily_room_capacity_facts.csv", "quality_summary.json",
                 "capacity_reconciliation.csv"]
 
 
+def _resolves_inside(path, root):
+    """True iff the (already realpath'd) `path` is inside `root`."""
+    try:
+        pathlib.Path(path).relative_to(pathlib.Path(root))
+        return True
+    except ValueError:
+        return False
+
+
+def validate_output_paths(output_dir=OUTPUT_DIR, names=OUTPUT_FILES):
+    """Reject any symlink escape of the graded output directory.
+
+    Security invariant: every graded output must be a regular file whose
+    fully-resolved path remains inside the real /app/output directory. The
+    output directory itself must not be (or resolve through) a symlink, since
+    /app/output -> /tests/expected would otherwise make the verifier read the
+    hidden goldens and pass every check.
+
+    Returns the canonical (realpath'd) output directory.
+    """
+    # A. Output directory must exist.
+    assert os.path.exists(output_dir), "missing output directory: %s" % output_dir
+    # B. Output directory itself must not be a symlink.
+    assert not os.path.islink(output_dir), \
+        "output directory is a symlink: %s" % output_dir
+    # C/D. Its fully-resolved form must be the canonical expected directory:
+    # no component of the output path (including parents) may be a symlink,
+    # or the graded root could be redirected (e.g. via a parent symlink).
+    literal = os.path.abspath(output_dir)
+    canonical = os.path.realpath(output_dir)
+    assert canonical == literal, \
+        "output directory %s resolves to %s; symlink components are not allowed" % (
+            output_dir, canonical)
+    assert os.path.isdir(canonical), \
+        "output directory does not resolve to a directory: %s" % output_dir
+
+    # E-H. Every required output must be a regular file resolving inside the
+    # canonical directory (rejects file symlinks and parent-dir escapes).
+    for name in names:
+        path = os.path.join(output_dir, name)
+        assert os.path.exists(path), "missing output: %s" % name
+        assert not os.path.islink(path), "output is a symlink: %s" % name
+        assert os.path.isfile(path), "output is not a regular file: %s" % name
+        real = os.path.realpath(path)
+        assert _resolves_inside(real, canonical), \
+            "%s resolves to %s, outside %s" % (name, real, canonical)
+    # I. No unexpected extra regular files beyond the required set.
+    expected = set(names)
+    for entry in os.listdir(output_dir):
+        full = os.path.join(output_dir, entry)
+        if entry in expected:
+            continue
+        assert not os.path.islink(full), "unexpected symlink in output: %s" % entry
+        assert not os.path.isfile(full), "unexpected output file: %s" % entry
+    return canonical
+
+
 def check_output_files():
-    for name in OUTPUT_FILES:
-        path = os.path.join(OUTPUT_DIR, name)
-        assert os.path.exists(path), "missing %s" % path
-        assert not os.path.islink(path), "%s is a symlink" % path
-        assert os.path.isfile(path), "%s is not a regular file" % path
-        assert os.path.realpath(path).startswith(
-            os.path.realpath(OUTPUT_DIR) + os.sep), \
-            "%s resolves outside %s" % (path, OUTPUT_DIR)
+    return validate_output_paths(OUTPUT_DIR, OUTPUT_FILES)

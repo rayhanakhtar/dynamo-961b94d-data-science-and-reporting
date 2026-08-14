@@ -517,6 +517,7 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
   effective bookings remain represented for state/quality semantics but do not
   contribute blocked capacity.
 - This artifact is the canonical current-state snapshot.
+- Rows are sorted ascending by `booking_id` (string order).
 
 ## 25. Booking state history
 
@@ -547,6 +548,8 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
   collision winner's `created_ts`, and `effective_to` is the `created_ts` of the next
   higher-numbered authoritative collision winner of the same booking, or empty for the
   highest-numbered authoritative collision winner.
+- Rows are sorted ascending by `booking_id` (string order), then by `revision`
+  (ascending integer order).
 
 ## 26. Capacity reconciliation
 
@@ -566,6 +569,8 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
 
 - Conservation invariant: `raw_interval_minutes =
   blocked_minutes + overlap_minutes` for every row.
+- Rows are sorted ascending by `room_id` (string order), then `clinic_id`
+  (string order), then `calendar_date` (chronological).
 
 ## 27. Cross-artifact invariants
 

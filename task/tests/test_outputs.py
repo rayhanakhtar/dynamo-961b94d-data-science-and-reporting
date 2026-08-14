@@ -19,7 +19,7 @@ import csv
 import json
 import os
 
-from conftest import OUTPUT_DIR
+from conftest import OUTPUT_DIR, OUTPUT_FILES, check_output_files
 
 REQUIRED_OUTPUTS = [
     "effective_bookings.csv",
@@ -32,15 +32,12 @@ REQUIRED_OUTPUTS = [
 
 def test_all_required_outputs_present_and_readable():
     """The agent must produce all five required output artifacts as regular,
-    readable files (schema-level checks are performed by the modular suite)."""
+    readable files inside the real /app/output directory (symlink escapes are
+    rejected by the shared validator; schema-level checks are performed by the
+    modular suite)."""
+    check_output_files()
     for name in REQUIRED_OUTPUTS:
         path = os.path.join(OUTPUT_DIR, name)
-        assert os.path.exists(path), "missing output %s" % name
-        assert not os.path.islink(path), "%s is a symlink" % name
-        assert os.path.isfile(path), "%s is not a regular file" % name
-        assert os.path.realpath(path).startswith(
-            os.path.realpath(OUTPUT_DIR) + os.sep), \
-            "%s resolves outside %s" % (path, OUTPUT_DIR)
         with open(path, encoding="utf-8") as handle:
             content = handle.read()
         assert content.strip(), "output %s is empty" % name

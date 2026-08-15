@@ -51,7 +51,7 @@ The core feed has exactly these 13 columns, in this order:
 | `start_time` | Start time of the booked interval, `HH:MM` or `HH:MM:SS` | `09:00` |
 | `end_date` | End date of the booked interval, `YYYY-MM-DD` | `2026-01-06` |
 | `end_time` | End time of the booked interval, `HH:MM` or `HH:MM:SS` | `12:00` |
-| `created_ts` | When the row was recorded, `YYYY-MM-DD HH:MM:SS` | `2026-01-05 08:15:00` |
+| `created_ts` | When the row was recorded, `YYYY-MM-DD HH:MM:SS` (seconds preserved) | `2026-01-05 08:15:42` |
 
 ### 2.2 reservation_adjustments.ndjson
 
@@ -76,7 +76,7 @@ Required object keys and types:
 | `start_time` | string (`HH:MM` or `HH:MM:SS`) | `09:00` |
 | `end_date` | string (`YYYY-MM-DD`) | `2026-04-28` |
 | `end_time` | string (`HH:MM` or `HH:MM:SS`) | `10:00` |
-| `created_ts` | string (`YYYY-MM-DD HH:MM:SS`) | `2026-04-26 11:00:00` |
+| `created_ts` | string (`YYYY-MM-DD HH:MM:SS`, seconds preserved) | `2026-04-26 11:07:53` |
 
 A row is malformed (Section 16) if any required key is missing or unparsable.
 
@@ -114,13 +114,24 @@ Both directories use the field-normalization rules of Section 3.
 - Dates are `YYYY-MM-DD`. Times are `HH:MM` or `HH:MM:SS`; seconds, if present,
   are truncated (floored) to the minute.
 - All times are local wall-clock time. No time-zone conversion is ever applied.
-- In every output artifact, timestamps are serialized as strings in the exact
-  format `YYYY-MM-DD HH:MM:SS`. Because input times are truncated to the
-  minute, normalized output timestamps always have a seconds component equal
-  to `00`. This applies to `start_ts`, `end_ts`, `created_ts`, and every
-  derived timestamp field in the output artifacts. The canonical instants of
-  Section 23 and the effective/history instants of Sections 24-25 all use this
-  serialization.
+- Output timestamps are serialized as strings in the exact format
+  `YYYY-MM-DD HH:MM:SS`. Two classes of timestamps exist, with different
+  precision rules:
+  - **Interval timestamps** (`start_ts`, `end_ts`) are derived from the
+    `start_date`/`start_time` and `end_date`/`end_time` inputs. Because input
+    times are truncated to the minute, `start_ts` and `end_ts` always have a
+    seconds component equal to `00`.
+  - **Provenance timestamps** (`created_ts`) record when a row was written.
+    They are validated as `YYYY-MM-DD HH:MM:SS` timestamps (Section 16) and
+    trimmed, but their seconds are NOT truncated: the validated `created_ts`
+    string is carried through the pipeline at its original precision, which
+    may include non-zero seconds.
+- Every derived timestamp field inherits the precision of the field it is
+  derived from: fields derived from interval times (`start_ts`, `end_ts`) keep
+  seconds `00`, while fields derived from `created_ts` (the
+  `effective_from`/`effective_to` of Section 25) preserve the source
+  `created_ts` seconds. The canonical instants of Section 23 and the
+  effective/history instants of Sections 24-25 all use this serialization.
 
 ### 3.1 Terminology and population vocabulary
 
@@ -616,14 +627,16 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
   | `source` | Source tag (attribute). |
   | `start_ts` | Canonical start instant. |
   | `end_ts` | Canonical end instant. |
-  | `created_ts` | Recorded timestamp. |
+  | `created_ts` | Recorded timestamp (provenance; seconds preserved per Section 3). |
 
 - Semantic population: normalized, deduplicated, validated, and
   identity-resolved rows across all event sources (that is, the validated
   surviving rows of term 2 of Section 3.1 with identity resolved per
   Sections 20-21).
-- `start_ts` and `end_ts` are serialized as `YYYY-MM-DD HH:MM:SS` (Section 3);
-  normalized times always have seconds equal to `00`.
+- `start_ts` and `end_ts` are interval timestamps (Section 3): serialized as
+  `YYYY-MM-DD HH:MM:SS`, normalized times always have seconds equal to `00`.
+  `created_ts` is a provenance timestamp (Section 3): its seconds are
+  preserved at the validated value.
 - Invariants:
   - `event_id` is unique after deduplication.
   - every accepted row has valid canonical date/time values;
@@ -658,8 +671,8 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
   population; `cancelled` effective bookings remain represented for
   state/quality semantics but do not contribute blocked capacity.
 - This artifact is the canonical current-state snapshot.
-- `start_ts` and `end_ts` are serialized as `YYYY-MM-DD HH:MM:SS` (Section 3);
-  normalized times always have seconds equal to `00`.
+- `start_ts` and `end_ts` are interval timestamps (Section 3): serialized as
+  `YYYY-MM-DD HH:MM:SS`, normalized times always have seconds equal to `00`.
 - Rows are sorted ascending by `booking_id` (string order).
 
 ## 25. Booking state history
@@ -693,10 +706,13 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
   collision winner's `created_ts`, and `effective_to` is the `created_ts` of the next
   higher-numbered authoritative collision winner of the same booking, or empty for the
   highest-numbered authoritative collision winner.
-- `start_ts`, `end_ts`, `effective_from`, and `effective_to` are serialized as
-  `YYYY-MM-DD HH:MM:SS` (Section 3); normalized times always have seconds equal
-  to `00`. `effective_to` is empty for the highest-numbered authoritative
-  revision.
+- `effective_from` and `effective_to` are **provenance timestamps** (Section 3):
+  each is copied verbatim from the corresponding authoritative collision
+  winner's `created_ts` and therefore preserves that `created_ts` seconds
+  value, which may be non-zero.
+- `start_ts` and `end_ts` are **interval timestamps** (Section 3): serialized as
+  `YYYY-MM-DD HH:MM:SS` with a seconds component always equal to `00`.
+- `effective_to` is empty for the highest-numbered authoritative revision.
 - Rows are sorted ascending by `booking_id` (string order), then by `revision`
   (ascending integer order).
 

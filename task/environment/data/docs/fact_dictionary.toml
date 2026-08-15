@@ -37,10 +37,10 @@ room_id = { type = "string", nullable = false, note = "canonicalized per section
 provider_id = { type = "string", nullable = true, note = "descriptive attribute" }
 source = { type = "string", nullable = true, note = "descriptive attribute; adjustment feed uses ADJUSTMENT" }
 start_date = { type = "date", format = "YYYY-MM-DD", nullable = false }
-start_time = { type = "time", format = "HH:MM or HH:MM:SS", nullable = false, note = "seconds truncated to minute" }
+start_time = { type = "time", format = "HH:MM or HH:MM:SS", nullable = false, note = "interval time; seconds truncated to minute" }
 end_date = { type = "date", format = "YYYY-MM-DD", nullable = false }
-end_time = { type = "time", format = "HH:MM or HH:MM:SS", nullable = false, note = "seconds truncated to minute" }
-created_ts = { type = "timestamp", format = "YYYY-MM-DD HH:MM:SS", nullable = false }
+end_time = { type = "time", format = "HH:MM or HH:MM:SS", nullable = false, note = "interval time; seconds truncated to minute" }
+created_ts = { type = "timestamp", format = "YYYY-MM-DD HH:MM:SS", nullable = false, note = "provenance timestamp; validated, seconds preserved (not truncated)" }
 
 [schema.clinic_directory]
 canonical_clinic_id = { type = "string", nullable = false }
@@ -63,9 +63,10 @@ ids_case_sensitive = ["event_id", "booking_id"]
 revision_type = "non-negative integer"
 date_format = "YYYY-MM-DD"
 time_format = "HH:MM or HH:MM:SS"
-seconds_truncated_to_minute = true
+interval_time_seconds_truncated_to_minute = true
+provenance_created_ts_seconds_preserved = true
 timestamp_output_format = "YYYY-MM-DD HH:MM:SS"
-timestamp_seconds_always_zero_after_truncation = true
+interval_timestamps_seconds_always_zero = true
 local_wall_clock = true
 timezone_conversion = false
 malformed_detection_after_dedup = true
@@ -168,7 +169,7 @@ columns = ["booking_id", "status", "clinic_id", "room_id", "start_ts", "end_ts",
 one_row_per_booking_with_effective_revision = true
 content_only_from_effective_authoritative_revision = true
 timestamp_format = "YYYY-MM-DD HH:MM:SS"
-timestamp_seconds_always_zero = true
+interval_timestamps_seconds_always_zero = true
 
 [outputs.booking_state_history]
 path = "/app/output/booking_state_history.csv"
@@ -177,7 +178,9 @@ one_row_per_authoritative_revision = true
 is_effective_single_row_when_effective_exists = true
 all_voided_booking_has_no_effective_row = true
 timestamp_format = "YYYY-MM-DD HH:MM:SS"
-timestamp_seconds_always_zero = true
+interval_timestamps_seconds_always_zero = true
+effective_from = "authoritative collision winner's created_ts (provenance; seconds preserved)"
+effective_to = "next higher-numbered authoritative collision winner's created_ts (provenance; seconds preserved), or empty for the highest-numbered authoritative revision"
 
 [outputs.capacity_reconciliation]
 path = "/app/output/capacity_reconciliation.csv"

@@ -1,0 +1,33 @@
+room_id,clinic_id,calendar_date,issue_type,note
+,,,dedup_discrepancy,reported duplicate-event count differs from the ingest log cross-feed count
+10,CL-C,2026-09-22,phantom_capacity,capacity appears for a room-day that the clinic census does not list
+14,CL-A,2026-08-10,overcount,room-day contains unexplained capacity; report exceeds independent census
+14,CL-B,2026-08-04,overcount,room-day contains unexplained capacity; report exceeds independent census
+14,CL-C,2026-12-10,phantom_capacity,capacity appears for a room-day that the clinic census does not list
+6,CL-D,2026-12-03,overcount,room-day contains unexplained capacity; report exceeds independent census
+9,CL-D,2026-08-04,wrong_room,booking BK-10002 appears under room 9/CL-D but should be RM-08/CL-C
+RM-01,CL-A,2026-08-04,wrong_room,booking BK-08700 appears under room RM-01/CL-A but should be RM-05/CL-C
+RM-01,CL-A,2026-08-17,overcount,room-day contains unexplained capacity; report exceeds independent census
+RM-01,CL-B,2026-08-10,overcount,room-day contains unexplained capacity; report exceeds independent census
+RM-01,CL-B,2026-11-19,overcount,room-day contains unexplained capacity; report exceeds independent census
+RM-01,CL-C,2026-08-17,overcount,room-day contains unexplained capacity; report exceeds independent census
+RM-01,CL-C,2026-11-10,overcount,room-day contains unexplained capacity; report exceeds independent census
+RM-01,CL-C,2026-12-10,phantom_capacity,capacity appears for a room-day that the clinic census does not list
+RM-03,CL-A,2026-09-13,phantom_capacity,capacity appears for a room-day that the clinic census does not list
+RM-05,CL-C,2026-08-18,missing_booking,booking BK-08700 reported at 11:00-12:00 instead of its recorded 13:00-14:00 slot
+RM-05,CL-C,2026-12-17,overcount,room-day contains unexplained capacity; report exceeds independent census
+RM-06,CL-A,2026-08-10,wrong_room,booking BK-10003 appears under room RM-06/CL-A but should be 10/CL-C
+RM-06,CL-B,2026-12-03,phantom_capacity,capacity appears for a room-day that the clinic census does not list
+RM-07,CL-A,2026-08-04,wrong_room,booking BK-10007 appears under room RM-07/CL-A but should be RM-07/CL-B
+RM-07,CL-B,2026-11-02,overcount,room-day contains unexplained capacity; report exceeds independent census
+RM-09,CL-C,2026-12-10,overcount,room-day contains unexplained capacity; report exceeds independent census
+RM-10,CL-A,2026-08-04,phantom_capacity,capacity appears for a room-day that the clinic census does not list
+RM-13,CL-C,2026-09-13,wrong_room,booking BK-10005 appears under room RM-13/CL-C but should be RM-14/CL-C
+RM-14,CL-A,2026-08-04,wrong_room,booking BK-10008 appears under room RM-14/CL-A but should be RM-14/CL-B
+RM-14,CL-B,2026-08-04,wrong_room,booking BK-10010 appears under room RM-14/CL-B but should be B1/CL-C
+RM-14,CL-B,2026-09-13,phantom_capacity,capacity appears for a room-day that the clinic census does not list
+RM-14,CL-C,2026-10-21,phantom_capacity,capacity appears for a room-day that the clinic census does not list
+RM-14,CL-D,2026-08-04,overcount,room-day contains unexplained capacity; report exceeds independent census
+RM-14,CL-D,2026-08-04,wrong_room,booking BK-10009 appears under room RM-14/CL-D but should be RM-09/CL-B
+RM-14,CL-D,2026-08-10,overcount,room-day contains unexplained capacity; report exceeds independent census
+RM-14,CL-D,2026-12-10,overcount,room-day contains unexplained capacity; report exceeds independent census

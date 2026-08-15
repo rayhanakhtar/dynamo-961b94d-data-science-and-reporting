@@ -18,9 +18,10 @@ the two sections must be read together to obtain the complete rule.
 
 ## 1. Inputs
 
-The task consumes four source artifacts plus this contract and the structured
-dictionary. All sources together constitute one operational event and identity
-universe; a correct implementation must consume every source.
+The task consumes four source artifacts plus this contract, the structured
+dictionary, and the public diagnostic evidence. All sources together
+constitute one operational event and identity universe; a correct
+implementation must consume every source.
 
 | Path | Contents |
 |------|----------|
@@ -30,6 +31,7 @@ universe; a correct implementation must consume every source.
 | `/app/data/room_directory.csv` | Clinic-scoped canonical room IDs and aliases. |
 | `/app/data/docs/fact_contract.md` | This contract (authoritative semantics). |
 | `/app/data/docs/fact_dictionary.toml` | Structured machine-readable schema/rule data (must agree with this contract). |
+| `/app/data/evidence/` | Public diagnostic evidence (incident report, revision audit, capacity snapshot). |
 
 ## 2. Input schemas
 
@@ -100,6 +102,39 @@ UTF-8 CSV, one header row, then one record per line. Columns:
 | `canonical_room_id` | Canonical room code within that clinic. |
 
 Both directories use the field-normalization rules of Section 3.
+
+## 2.5 Public diagnostic evidence
+
+`/app/data/evidence/` contains public operational observations about the
+room-capacity reporting pipeline. They are diagnostic aids for investigating
+discrepancies; they are NOT authoritative specifications and they are NOT
+required outputs. Where an evidence observation and this contract disagree,
+this contract wins. The agent may use the evidence to form and test
+hypotheses about why produced artifacts differ from expected operational
+behavior.
+
+- `incident_report.csv` — symptom observations about selected room-days and
+  bookings. Columns: `room_id`, `clinic_id`, `calendar_date`, `issue_type`,
+  `note`. `issue_type` uses a small operational vocabulary (for example
+  `undercount`, `overcount`, `wrong_room`, `phantom_capacity`,
+  `missing_booking`, `dedup_discrepancy`). The rows identify symptoms, not
+  causes, and may reference room-days or bookings affected by multiple
+  upstream conditions. `room_id`/`clinic_id`/`calendar_date` may be empty for
+  pipeline-level observations (for example a dedup discrepancy).
+- `revision_audit.csv` — selected raw event rows for a set of bookings,
+  mirroring the public source feeds (pre-deduplication). Columns:
+  `booking_id`, `revision`, `status`, `clinic_id`, `room_id`, `start_date`,
+  `start_time`, `end_date`, `end_time`, `created_ts`, `source`. Rows are
+  taken verbatim from the source artifacts so the agent can reason about
+  revision histories, cross-source collisions, identity changes, and source
+  provenance. The file does not label which rows (if any) are anomalous.
+- `capacity_snapshot.csv` — a partial, independent reference for a small
+  subset of `(room_id, clinic_id, calendar_date)` combinations. Columns:
+  `room_id`, `clinic_id`, `calendar_date`, `reference_blocked_minutes`,
+  `reference_note`. Values reflect the correct capacity for those selected
+  room-days. The snapshot covers only a small subset of the full fact table;
+  it must not be treated as a complete expected output.
+
 
 ## 3. Field normalization
 

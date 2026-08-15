@@ -3,13 +3,17 @@
 Prepare analysis-ready ambulatory room-capacity outputs from the supplied
 operational scheduling sources, following the authoritative contract.
 
-`/app/prepare_facts.py` is the only file you must produce; inputs and contract
-are fixed.
+`/app/prepare_facts.py` is an existing implementation of the pipeline. It
+runs, but it is known to produce incorrect results for some room-days,
+bookings, and quality populations. Your job is to diagnose why it is wrong,
+repair the implementation, and produce all five required artifacts correctly.
 
 ## Objective
 
 Read every operational source under `/app/data/`, apply the contract's
-semantic rules, and write the five required outputs under `/app/output/`.
+semantic rules, identify where the existing implementation deviates from
+them, repair `/app/prepare_facts.py`, and write the five required outputs
+under `/app/output/`.
 
 ## Inputs
 
@@ -21,6 +25,9 @@ semantic rules, and write the five required outputs under `/app/output/`.
 - `/app/data/docs/fact_contract.md` — the authoritative semantic contract.
 - `/app/data/docs/fact_dictionary.toml` — structured schema/rule data that
   must agree with the contract.
+- `/app/data/evidence/` — public diagnostic evidence: an incident report,
+  a revision audit, and a partial capacity snapshot describing observed
+  symptoms of the pipeline's incorrect results.
 
 The two event feeds share one logical event schema. All sources together form
 the complete event and identity universe.
@@ -88,6 +95,13 @@ Each category is an object with exactly these keys, in this order:
 All metric values are exact integers; there are no extra categories or keys;
 JSON serialization is deterministic. The population and aggregation of every
 metric are defined in contract Section 17.
+
+## Evidence
+
+The evidence under `/app/data/evidence/` describes observed symptoms of the
+pipeline's incorrect results. It is advisory and partial: use it to form and
+test hypotheses, but do not treat it as an authoritative specification or as
+a substitute for the contract. Evidence is not a required output.
 
 ## Contract Authority
 

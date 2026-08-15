@@ -22,6 +22,13 @@ reservation_adjustments = { path = "/app/data/reservation_adjustments.ndjson", f
 clinic_directory = { path = "/app/data/clinic_directory.csv", format = "csv", role = "canonical clinic ids and aliases" }
 room_directory = { path = "/app/data/room_directory.csv", format = "csv", role = "clinic-scoped canonical room ids and aliases" }
 
+[evidence]
+directory = "/app/data/evidence"
+role = "public operational observations; diagnostic aids only; not authoritative; not required outputs; contract overrides on conflict"
+incident_report = { path = "/app/data/evidence/incident_report.csv", columns = ["room_id", "clinic_id", "calendar_date", "issue_type", "note"], note = "symptom observations; rows identify symptoms, not causes" }
+revision_audit = { path = "/app/data/evidence/revision_audit.csv", columns = ["booking_id", "revision", "status", "clinic_id", "room_id", "start_date", "start_time", "end_date", "end_time", "created_ts", "source"], note = "selected raw event rows mirroring the public source feeds" }
+capacity_snapshot = { path = "/app/data/evidence/capacity_snapshot.csv", columns = ["room_id", "clinic_id", "calendar_date", "reference_blocked_minutes", "reference_note"], note = "partial independent reference for a small subset of room-days" }
+
 # ---------------------------------------------------------------------------
 # Event source schema (scheduling_events.csv and reservation_adjustments.ndjson
 # share one logical event schema)

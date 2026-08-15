@@ -1,17 +1,25 @@
 """Hidden semantic-generalization grader.
 
-Runs the submitted /app/prepare_facts.py against deterministic hidden input
+Runs the implementation under test against deterministic hidden input
 universes generated from the documented contract semantics, and compares all
 five produced artifacts exactly against an independent derivation.
+
+The implementation under test is discovered from the grading lifecycle:
+
+  * oracle validation: the reference solution is mounted at /solution
+    (Harbor's OracleAgent uploads solution/ there and the verifier runs in
+    the same container), so the oracle's own entrypoint (solution/solve.sh)
+    is executed;
+  * agent runs: the agent's repaired /app/prepare_facts.py is executed.
+
+In both lifecycles the program is driven with the DYNAMO_* input/output
+environment overrides, each variant writing into an isolated temp output
+directory, so the public /app/output directory is never touched and the
+hidden grader is fully independent of the public grader.
 
 The hidden universes are generated into pytest temp directories at grading
 time. They are never placed under the agent-visible /app/data directory, and
 their values are never exposed to the agent environment.
-
-The hidden grader never writes to the public /app/output directory: each
-variant runs the submitted implementation in an isolated temp output
-directory via the DYNAMO_*_PATH environment overrides, so the public grader
-and the hidden grader are fully independent.
 """
 
 import csv
@@ -98,9 +106,35 @@ def _header_for(out_name):
     }[out_name]
 
 
+def _program_under_test():
+    """Return the graded program's absolute path.
+
+    The verifier grades whichever implementation produced the artifacts under
+    test. In oracle validation, Harbor's OracleAgent uploads solution/ to
+    /solution and the verifier runs in the same container, so the oracle
+    entrypoint is present; in agent runs, only the agent's /app/prepare_facts.py
+    exists.
+    """
+    oracle_entry = os.path.join(os.sep, "solution", "solve.sh")
+    if os.path.isfile(oracle_entry):
+        return oracle_entry
+    return os.path.join(os.sep, "app", "prepare_facts.py")
+
+
 def _run_submitted(input_dir, out_dir, work_dir):
-    """Run the submitted implementation against the given input universe."""
+    """Run the implementation under test against the given input universe."""
+    program = _program_under_test()
     env = dict(os.environ)
+    # The verifier process runs under hardening flags (test.sh sets
+    # PYTHONSAFEPATH/NOUSERSITE/NODEBUG etc.). Those flags must NOT leak into
+    # the graded program's subprocess: PYTHONSAFEPATH in particular stops
+    # Python from placing a script's own directory on sys.path, which would
+    # break the reference solution's legitimate sibling-module imports (and
+    # any single-file implementation that relies on its own directory). Drop
+    # all PYTHON* variables so the graded program runs under normal Python
+    # semantics.
+    for key in [k for k in env if k.startswith("PYTHON")]:
+        del env[key]
     env["DYNAMO_INPUT_SCHEDULING"] = os.path.join(input_dir,
                                                   "scheduling_events.csv")
     env["DYNAMO_INPUT_ADJUSTMENTS"] = os.path.join(
@@ -118,9 +152,17 @@ def _run_submitted(input_dir, out_dir, work_dir):
     env["DYNAMO_FACTS_PATH"] = os.path.join(out_dir,
                                             "daily_room_capacity_facts.csv")
     env["DYNAMO_SUMMARY_PATH"] = os.path.join(out_dir, "quality_summary.json")
+    if program.endswith("solve.sh"):
+        # The oracle entrypoint changes into its own directory and invokes
+        # solve.py; run it with a workdir that keeps its sibling modules
+        # importable.
+        cwd = os.path.join(os.sep, "solution")
+        cmd = ["/bin/bash", program]
+    else:
+        cwd = input_dir
+        cmd = [sys.executable, program]
     proc = subprocess.run(
-        [sys.executable, "/app/prepare_facts.py"],
-        cwd=input_dir, env=env, capture_output=True, timeout=120)
+        cmd, cwd=cwd, env=env, capture_output=True, timeout=120)
     return proc
 
 

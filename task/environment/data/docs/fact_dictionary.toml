@@ -355,3 +355,14 @@ shared_room = "provider_id/source do not create separate capacity timelines"
 superseded_state = "superseded revisions never contribute capacity"
 no_phantom_capacity = "cancelled or all-voided effective states never contribute blocked minutes"
 deterministic_ordering = "all output sort orders and JSON key orders are fixed"
+
+[stateful]
+persisted_state_path = "/app/state/state.json"
+components = ["ingest_events.py", "rebuild_state.py", "prepare_facts.py"]
+top_level_dispatcher = "/app/prepare_facts.py"
+event_identity_stable_across_reprocessing = true
+reingestion_idempotent = true
+incremental_plus_replay_equals_fresh = true
+restart_from_checkpoint_preserves_semantics = true
+persisted_state_and_fresh_recompute_converge = true
+final_artifacts_identical_across_valid_paths = true

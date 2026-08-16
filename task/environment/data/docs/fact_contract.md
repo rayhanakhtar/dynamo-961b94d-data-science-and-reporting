@@ -834,3 +834,61 @@ bookings_with_effective_revision + bookings_with_no_effective_revision`, and
   definitions of Section 3.1.
 - Section 17 is the sole authoritative definition of the quality-summary JSON
   schema; it supersedes any earlier flat-key representation.
+
+
+## 30. Stateful operational invariants
+
+The pipeline is implemented as a stateful system. It maintains a persisted
+canonical state under /app/state and is driven by three logical components
+(/app/bin/ingest_events.py, /app/bin/rebuild_state.py,
+/app/bin/prepare_facts.py), with a top-level fresh-build dispatcher at
+/app/prepare_facts.py.
+
+The persisted state is a deterministic representation of the canonical event
+ledger and its derived state (authoritative collision winners, effective
+revisions, per-source accounting, and a rebuild checkpoint). It contains no
+expected output values.
+
+The following are operational invariants. They define how the system must
+behave across execution modes; they do NOT replace or alter any data
+semantics defined in Sections 1-29.
+
+1. **Event identity is stable across reprocessing.** The same logical event
+   (identified by event_id) is accepted at most once. Re-supplying an event
+   that is already part of the persisted canonical ledger is idempotent: it
+   does not create a duplicate canonical record and does not change any
+   derived state.
+
+2. **Re-ingesting the same event set is idempotent.** Processing the same
+   input (or a partition of it) twice yields the same canonical ledger and the
+   same final artifacts.
+
+3. **Incremental processing followed by replay equals fresh rebuild.** For a
+   given logical event universe, ingesting it as any valid batch partition
+   (one batch, several batches, empty intermediate batches, or duplicated
+   re-ingestion) and then rebuilding produces exactly the same derived state
+   and final artifacts as a single fresh build from the raw inputs.
+
+4. **Restarting from a valid persisted checkpoint preserves semantics.**
+   Continuing from a persisted state after a checkpoint must produce the same
+   result as processing the same logical universe uninterrupted. A checkpoint
+   must not be trusted as complete when logically related state was not
+   committed with it.
+
+5. **Persisted canonical state and fresh recomputation converge.** The
+   derived state reconstructed from the persisted canonical ledger (replay)
+   equals a fresh recomputation from the raw source inputs for the same
+   logical universe.
+
+6. **The five final artifacts are identical regardless of the valid
+   processing path.** Fresh build, incremental ingestion, replay from
+   persisted state, restart from a checkpoint, and idempotent reprocessing of
+   the same logical event universe must all produce byte-identical
+   effective_bookings.csv, ooking_state_history.csv,
+   daily_room_capacity_facts.csv, capacity_reconciliation.csv, and
+   quality_summary.json.
+
+The collision, identity, effective-revision, materialization,
+reconciliation, and quality definitions of Sections 1-29 remain the sole
+definition of the target outputs. Section 30 only constrains how those
+outputs must be reached across execution modes.

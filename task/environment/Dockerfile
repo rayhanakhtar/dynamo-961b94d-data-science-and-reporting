@@ -17,13 +17,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 python3
 # solution code live here.
 COPY data /app/data
 
-# Starter the agent must repair. It ships as the implementation under /app
-# and reads /app/data, writing its five required artifacts to /app/output.
+# Starter the agent must repair. It ships as a multi-component system under
+# /app: a top-level dispatcher and the bin/ components that implement the
+# stateful pipeline (ingest -> rebuild -> prepare). The dispatcher performs a
+# fresh build and writes the five required artifacts to /app/output.
+COPY bin /app/bin
 COPY prepare_facts.py /app/prepare_facts.py
 
-# Output directory for the required artifacts and a scratch work area.
-# Both are made world-writable so the agent can always write regardless of
-# runtime user.
-RUN mkdir -p /app/output /app/work && chmod 1777 /app/output /app/work
+# Output directory for the required artifacts, a scratch work area, and a
+# persisted-state directory. All are made world-writable so the agent can
+# always write regardless of runtime user.
+RUN mkdir -p /app/output /app/work /app/state && chmod 1777 /app/output /app/work /app/state
 
 WORKDIR /app

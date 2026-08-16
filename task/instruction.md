@@ -3,17 +3,32 @@
 Prepare analysis-ready ambulatory room-capacity outputs from the supplied
 operational scheduling sources, following the authoritative contract.
 
-`/app/prepare_facts.py` is an existing implementation of the pipeline. It
-runs, but it is known to produce incorrect results for some room-days,
-bookings, and quality populations. Your job is to diagnose why it is wrong,
-repair the implementation, and produce all five required artifacts correctly.
+The system under `/app` is a stateful pipeline that maintains persisted
+canonical state and produces the required artifacts. It runs, but it is known
+to be incorrect under some operational execution modes. Your job is to
+diagnose why, repair the implementation, and produce all five required
+artifacts correctly and consistently across execution modes.
 
 ## Objective
 
 Read every operational source under `/app/data/`, apply the contract's
 semantic rules, identify where the existing implementation deviates from
-them, repair `/app/prepare_facts.py`, and write the five required outputs
-under `/app/output/`.
+them, repair it, and write the five required outputs under `/app/output/`.
+
+The pipeline has three logical components and a persisted state:
+
+- `/app/bin/ingest_events.py` — ingests operational events into persisted
+  canonical state;
+- `/app/bin/rebuild_state.py` — rebuilds derived canonical state from the
+  persisted ledger;
+- `/app/bin/prepare_facts.py` — materializes the five output artifacts;
+- `/app/state/` — persisted canonical state;
+- `/app/prepare_facts.py` — top-level dispatcher that performs a fresh build.
+
+The system must be correct across fresh builds, incremental ingestion,
+persisted state, replay, restart, and idempotent reprocessing: for any valid
+execution history of the same logical event universe, the five final
+artifacts must be identical (contract Section 30).
 
 ## Inputs
 
@@ -25,8 +40,7 @@ under `/app/output/`.
 - `/app/data/docs/fact_contract.md` — the authoritative semantic contract.
 - `/app/data/docs/fact_dictionary.toml` — structured schema/rule data that
   must agree with the contract.
-- `/app/data/evidence/` — public diagnostic evidence: an incident report,
-  a revision audit, and a partial capacity snapshot describing observed
+- `/app/data/evidence/` — public diagnostic evidence describing observed
   symptoms of the pipeline's incorrect results.
 
 The two event feeds share one logical event schema. All sources together form
@@ -107,10 +121,15 @@ a substitute for the contract. Evidence is not a required output.
 
 `/app/data/docs/fact_contract.md` is the authoritative specification for all
 processing, schema, population, revision, identity, capacity,
-reconciliation, and quality rules. Follow it for the complete semantics.
+reconciliation, quality, and operational-execution rules. Follow it for the
+complete semantics.
 
 ## Determinism and Completion
 
 Produce all five required files in the specified schemas and ordering. Two
 runs on the same inputs must produce identical outputs. Outputs must satisfy
-the cross-artifact invariants defined by `fact_contract.md`.
+the cross-artifact invariants defined by `fact_contract.md`, and the
+operational invariants of contract Section 30: fresh build, incremental
+ingestion, replay from persisted state, restart from a checkpoint, and
+idempotent reprocessing of the same logical event universe must all produce
+identical final artifacts.

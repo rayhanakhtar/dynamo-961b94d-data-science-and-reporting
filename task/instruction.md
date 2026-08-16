@@ -25,6 +25,9 @@ The pipeline has three logical components and a persisted state:
 - `/app/state/` — persisted canonical state;
 - `/app/prepare_facts.py` — top-level dispatcher that performs a fresh build.
 
+The persisted pipeline state is maintained at `/state/state.json` and must
+remain consistent across ingestion, rebuild, restart, and replay operations.
+
 The system must be correct across fresh builds, incremental ingestion,
 persisted state, replay, restart, and idempotent reprocessing: for any valid
 execution history of the same logical event universe, the five final

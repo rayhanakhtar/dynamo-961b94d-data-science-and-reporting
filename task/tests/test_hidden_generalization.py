@@ -154,8 +154,8 @@ def _run_submitted(input_dir, out_dir, work_dir):
     env["DYNAMO_SUMMARY_PATH"] = os.path.join(out_dir, "quality_summary.json")
     if program.endswith("solve.sh"):
         # The oracle entrypoint changes into its own directory and invokes
-        # solve.py; run it with a workdir that keeps its sibling modules
-        # importable.
+        # the bin components (ingest/rebuild/prepare); run it from a workdir
+        # that keeps the sibling modules and bin/ package importable.
         cwd = os.path.join(os.sep, "solution")
         cmd = ["/bin/bash", program]
     else:

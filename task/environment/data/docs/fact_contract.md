@@ -884,7 +884,7 @@ semantics defined in Sections 1-29.
    processing path.** Fresh build, incremental ingestion, replay from
    persisted state, restart from a checkpoint, and idempotent reprocessing of
    the same logical event universe must all produce byte-identical
-   effective_bookings.csv, ooking_state_history.csv,
+   effective_bookings.csv, booking_state_history.csv,
    daily_room_capacity_facts.csv, capacity_reconciliation.csv, and
    quality_summary.json.
 

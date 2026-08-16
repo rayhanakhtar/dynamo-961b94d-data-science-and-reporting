@@ -32,6 +32,7 @@ if _HERE not in sys.path:
 
 import hidden_reference
 import hidden_universes
+import _jail
 
 OUTPUT_NAMES = ["effective_bookings.csv", "booking_state_history.csv",
                 "daily_room_capacity_facts.csv",
@@ -45,37 +46,75 @@ def _components_root():
     return os.path.join(os.sep, "app", "bin")
 
 
-def _run(script, args):
-    path = os.path.join(_components_root(), script)
-    proc = subprocess.run([sys.executable, path] + args, capture_output=True,
-                          text=True)
-    assert proc.returncode == 0, (
-        "%s failed:\n%s" % (path, proc.stderr[-2000:]))
-    return proc.stdout
+class _StatefulCtx(object):
+    """Binds the stateful verifier to one grading lifecycle.
 
+    Oracle lifecycle: components run directly with /solution available
+    (trusted reference). Agent lifecycle: components run inside a chroot jail
+    that contains only the submitted /app program, the generated hidden inputs
+    (copied from ``input_base``), and empty output/work/state dirs -- so the
+    submitted program cannot read /tests or /solution.
+    """
 
-def _ingest(state, batch_dir):
-    _run("ingest_events.py", ["--state", state,
-                              "--scheduling",
-                              os.path.join(batch_dir, "scheduling_events.csv"),
-                              "--adjustments",
-                              os.path.join(batch_dir,
-                                           "reservation_adjustments.ndjson"),
-                              "--clinics",
-                              os.path.join(batch_dir, "clinic_directory.csv"),
-                              "--rooms",
-                              os.path.join(batch_dir, "room_directory.csv")])
+    def __init__(self, jail, input_base, universes):
+        self.jail = jail
+        self.input_base = input_base
+        self.universes = universes
+        self.oracle = os.path.isfile(
+            os.path.join(os.sep, "solution", "bin", "ingest_events.py"))
 
+    def _translate(self, arg):
+        if arg.startswith(self.input_base):
+            return os.path.join("/input",
+                                os.path.relpath(arg, self.input_base))
+        if arg.startswith(self.jail.root):
+            return self.jail.jail(arg)
+        return arg
 
-def _rebuild(state):
-    _run("rebuild_state.py", ["--state", state])
+    def run(self, script, args):
+        if self.oracle:
+            path = os.path.join(_components_root(), script)
+            proc = subprocess.run([sys.executable, path] + args,
+                                  capture_output=True, text=True)
+        else:
+            translated = [self._translate(a) for a in args]
+            # The verifier (root) may have pre-created output dirs / state
+            # files inside the jail tree; the jailed program runs as nobody and
+            # must be able to write them. Hidden inputs (/input) stay read-only.
+            for arg in translated:
+                if (arg.startswith(("/state", "/output", "/work"))
+                        and not arg.startswith("/app")):
+                    host_arg = self.jail.host(arg)
+                    if os.path.isdir(host_arg):
+                        os.chmod(host_arg, 0o1777)
+                    elif os.path.isfile(host_arg):
+                        os.chmod(host_arg, 0o666)
+            proc = self.jail.run(
+                [self.jail.interp, os.path.join("/app", "bin", script)]
+                + translated, _jail.prepare_env_for_jail())
+        assert proc.returncode == 0, (
+            "%s failed:\n%s" % (script, proc.stderr[-2000:]))
+        return proc.stdout
 
+    def ingest(self, state, batch_dir):
+        self.run("ingest_events.py",
+                 ["--state", state, "--scheduling",
+                  os.path.join(batch_dir, "scheduling_events.csv"),
+                  "--adjustments",
+                  os.path.join(batch_dir, "reservation_adjustments.ndjson"),
+                  "--clinics",
+                  os.path.join(batch_dir, "clinic_directory.csv"),
+                  "--rooms",
+                  os.path.join(batch_dir, "room_directory.csv")])
 
-def _prepare(state, out, replay=False):
-    args = ["--state", state, "--output", out]
-    if replay:
-        args.append("--replay")
-    _run("prepare_facts.py", args)
+    def rebuild(self, state):
+        self.run("rebuild_state.py", ["--state", state])
+
+    def prepare(self, state, out, replay=False):
+        args = ["--state", state, "--output", out]
+        if replay:
+            args.append("--replay")
+        self.run("prepare_facts.py", args)
 
 
 def _write_universe(input_dir, universe):
@@ -203,78 +242,85 @@ def _check_derived_state_converges(state_path, scenario):
         % scenario)
 
 
-def _fresh(state, out, batch_dir):
-    _ingest(state, batch_dir)
-    _rebuild(state)
-    _prepare(state, out)
+def _fresh(ctx, state, out, batch_dir):
+    ctx.ingest(state, batch_dir)
+    ctx.rebuild(state)
+    ctx.prepare(state, out)
     return state, _read_artifacts(out)
 
 
-def _scenario_repeated_ingest(state, out, batch_dir):
-    _ingest(state, batch_dir)
-    _ingest(state, batch_dir)
-    _rebuild(state)
-    _prepare(state, out)
+def _scenario_repeated_ingest(ctx, state, out, batch_dir):
+    ctx.ingest(state, batch_dir)
+    ctx.ingest(state, batch_dir)
+    ctx.rebuild(state)
+    ctx.prepare(state, out)
     return state, _read_artifacts(out)
 
 
-def _scenario_split_batch(state, out, a_dir, b_dir):
-    _ingest(state, a_dir)
-    _ingest(state, b_dir)
-    _rebuild(state)
-    _prepare(state, out)
+def _scenario_split_batch(ctx, state, out, a_dir, b_dir):
+    ctx.ingest(state, a_dir)
+    ctx.ingest(state, b_dir)
+    ctx.rebuild(state)
+    ctx.prepare(state, out)
     return state, _read_artifacts(out)
 
 
-def _scenario_restart(state, out, a_dir, b_dir):
-    _ingest(state, a_dir)
-    _rebuild(state)
+def _scenario_restart(ctx, state, out, a_dir, b_dir):
+    ctx.ingest(state, a_dir)
+    ctx.rebuild(state)
     state2 = state + ".resume"
     shutil.copy(state, state2)
-    _ingest(state2, b_dir)
-    _rebuild(state2)
-    _prepare(state2, out)
+    ctx.ingest(state2, b_dir)
+    ctx.rebuild(state2)
+    ctx.prepare(state2, out)
     return state2, _read_artifacts(out)
 
 
-def _scenario_replay(state, out, batch_dir):
-    _ingest(state, batch_dir)
-    _rebuild(state)
-    _prepare(state, out, replay=True)
+def _scenario_replay(ctx, state, out, batch_dir):
+    ctx.ingest(state, batch_dir)
+    ctx.rebuild(state)
+    ctx.prepare(state, out, replay=True)
     return state, _read_artifacts(out)
 
 
-def _scenario_revision_update(state, out, a_dir, b_dir):
-    _ingest(state, a_dir)
-    _rebuild(state)
-    _prepare(state, out)
-    _ingest(state, b_dir)
-    _rebuild(state)
-    _prepare(state, out)
+def _scenario_revision_update(ctx, state, out, a_dir, b_dir):
+    ctx.ingest(state, a_dir)
+    ctx.rebuild(state)
+    ctx.prepare(state, out)
+    ctx.ingest(state, b_dir)
+    ctx.rebuild(state)
+    ctx.prepare(state, out)
     return state, _read_artifacts(out)
 
 
-def _scenario_partitions(state, out, a_dir, b_dir):
+def _scenario_partitions(ctx, state, out, a_dir, b_dir):
     # [A][B], [A][empty][B], [A][B][dup B]
-    _ingest(state, a_dir)
-    _ingest(state, b_dir)
-    _ingest(state, b_dir)  # duplicate re-ingest of B
-    _rebuild(state)
-    _prepare(state, out)
+    ctx.ingest(state, a_dir)
+    ctx.ingest(state, b_dir)
+    ctx.ingest(state, b_dir)  # duplicate re-ingest of B
+    ctx.rebuild(state)
+    ctx.prepare(state, out)
     return state, _read_artifacts(out)
 
 
-def _scenario_cross_source(state, out, sched_dir, adj_dir):
+def _scenario_cross_source(ctx, state, out, sched_dir, adj_dir):
     # scheduling and adjustments arrive in different batches
-    _ingest(state, sched_dir)
-    _ingest(state, adj_dir)
-    _rebuild(state)
-    _prepare(state, out)
+    ctx.ingest(state, sched_dir)
+    ctx.ingest(state, adj_dir)
+    ctx.rebuild(state)
+    ctx.prepare(state, out)
     return state, _read_artifacts(out)
 
 
 @pytest.fixture(scope="module")
-def stateful_universes(tmp_path_factory):
+def stateful_ctx(tmp_path_factory):
+    """Build the hidden stateful-universe inputs and the execution context.
+
+    Oracle lifecycle: components run directly (trusted, /solution available).
+    Agent lifecycle: the submitted /app program and the generated inputs are
+    copied into a chroot jail; the components run inside it so /tests and
+    /solution are not readable by the submitted program.
+    """
     base = tmp_path_factory.mktemp("stateful_inputs")
     out = {}
     for name in hidden_universes.UNIVERSE_NAMES:
@@ -301,7 +347,18 @@ def stateful_universes(tmp_path_factory):
         _write_universe(str(adj_dir), adj_only)
         out[name] = {"full": str(full), "a": str(a_dir), "b": str(b_dir),
                      "sched": str(sched_dir), "adj": str(adj_dir)}
-    return out
+
+    jail = _jail.Jail(str(tmp_path_factory.mktemp("jail")))
+    ctx = _StatefulCtx(jail, str(base), out)
+    if not ctx.oracle:
+        jail.build()
+        jail.install_program(os.path.join(os.sep, "app"))
+        # The generated inputs are copied into the jail's /input; the
+        # components are invoked with jail-relative paths pointing there.
+        shutil.rmtree(jail.host("input"))
+        shutil.copytree(base, jail.host("input"))
+        jail._chmod_world_readable(jail.host("input"))
+    return ctx
 
 
 def _grade(state, out, produced, expected):
@@ -315,28 +372,36 @@ def _grade(state, out, produced, expected):
     "revision_update", "partitions", "cross_source",
 ])
 @pytest.mark.parametrize("uname", hidden_universes.UNIVERSE_NAMES)
-def test_stateful_convergence(scenario, uname, stateful_universes, tmp_path):
-    u = stateful_universes[uname]
+def test_stateful_convergence(scenario, uname, stateful_ctx, tmp_path):
+    ctx = stateful_ctx
+    u = ctx.universes[uname]
     expected_dir = u["full"]
     expected = hidden_reference._expected(expected_dir)
 
-    state = str(tmp_path / ("state_%s_%s.json" % (uname, scenario)))
-    out = str(tmp_path / ("out_%s_%s" % (uname, scenario)))
-    os.makedirs(out)
+    if ctx.oracle:
+        state = str(tmp_path / ("state_%s_%s.json" % (uname, scenario)))
+        out = str(tmp_path / ("out_%s_%s" % (uname, scenario)))
+        os.makedirs(out)
+    else:
+        state = ctx.jail.host("state/state_%s_%s.json" % (uname, scenario))
+        out = ctx.jail.host("output/out_%s_%s" % (uname, scenario))
+        ctx.jail.reset_mutable()
+        os.makedirs(out)
 
     scn = {
-        "fresh": lambda s, o: _fresh(s, o, u["full"]),
+        "fresh": lambda s, o: _fresh(ctx, s, o, u["full"]),
         "repeated_ingest": lambda s, o: _scenario_repeated_ingest(
-            s, o, u["full"]),
+            ctx, s, o, u["full"]),
         "split_batch": lambda s, o: _scenario_split_batch(
-            s, o, u["a"], u["b"]),
-        "restart": lambda s, o: _scenario_restart(s, o, u["a"], u["b"]),
-        "replay": lambda s, o: _scenario_replay(s, o, u["full"]),
+            ctx, s, o, u["a"], u["b"]),
+        "restart": lambda s, o: _scenario_restart(ctx, s, o, u["a"], u["b"]),
+        "replay": lambda s, o: _scenario_replay(ctx, s, o, u["full"]),
         "revision_update": lambda s, o: _scenario_revision_update(
-            s, o, u["a"], u["b"]),
-        "partitions": lambda s, o: _scenario_partitions(s, o, u["a"], u["b"]),
+            ctx, s, o, u["a"], u["b"]),
+        "partitions": lambda s, o: _scenario_partitions(
+            ctx, s, o, u["a"], u["b"]),
         "cross_source": lambda s, o: _scenario_cross_source(
-            s, o, u["sched"], u["adj"]),
+            ctx, s, o, u["sched"], u["adj"]),
     }[scenario]
 
     produced_state, produced = scn(state, out)

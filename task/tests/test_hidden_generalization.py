@@ -36,6 +36,7 @@ if _HERE not in sys.path:
 
 import hidden_reference
 import hidden_universes
+import _jail
 
 OUTPUT_NAMES = ["daily_room_capacity_facts.csv", "quality_summary.json",
                 "effective_bookings.csv", "booking_state_history.csv",
@@ -114,6 +115,10 @@ def _program_under_test():
     /solution and the verifier runs in the same container, so the oracle
     entrypoint is present; in agent runs, only the agent's /app/prepare_facts.py
     exists.
+
+    The agent lifecycle is executed inside a chroot jail (see _jail) so the
+    submitted program cannot read /tests or /solution; the oracle lifecycle is
+    trusted and runs unjailed.
     """
     oracle_entry = os.path.join(os.sep, "solution", "solve.sh")
     if os.path.isfile(oracle_entry):
@@ -121,48 +126,64 @@ def _program_under_test():
     return os.path.join(os.sep, "app", "prepare_facts.py")
 
 
-def _run_submitted(input_dir, out_dir, work_dir):
-    """Run the implementation under test against the given input universe."""
+def _run_submitted(input_dir, out_dir, work_dir, jail):
+    """Run the implementation under test against the given input universe.
+
+    Agent lifecycles are executed inside a chroot jail containing only the
+    submitted /app program, the generated hidden inputs, a minimal Python
+    runtime, and empty output/work/state dirs -- so /tests and /solution are
+    not resolvable by the submitted program. The oracle lifecycle (trusted) is
+    executed directly with /solution available.
+    """
     program = _program_under_test()
-    env = dict(os.environ)
-    # The verifier process runs under hardening flags (test.sh sets
-    # PYTHONSAFEPATH/NOUSERSITE/NODEBUG etc.). Those flags must NOT leak into
-    # the graded program's subprocess: PYTHONSAFEPATH in particular stops
-    # Python from placing a script's own directory on sys.path, which would
-    # break the reference solution's legitimate sibling-module imports (and
-    # any single-file implementation that relies on its own directory). Drop
-    # all PYTHON* variables so the graded program runs under normal Python
-    # semantics.
-    for key in [k for k in env if k.startswith("PYTHON")]:
-        del env[key]
-    env["DYNAMO_INPUT_SCHEDULING"] = os.path.join(input_dir,
-                                                  "scheduling_events.csv")
-    env["DYNAMO_INPUT_ADJUSTMENTS"] = os.path.join(
-        input_dir, "reservation_adjustments.ndjson")
-    env["DYNAMO_INPUT_CLINICS"] = os.path.join(input_dir,
-                                               "clinic_directory.csv")
-    env["DYNAMO_INPUT_ROOMS"] = os.path.join(input_dir, "room_directory.csv")
-    env["DYNAMO_LEDGER_PATH"] = os.path.join(work_dir, "canonical_events.csv")
-    env["DYNAMO_EFFECTIVE_PATH"] = os.path.join(out_dir,
-                                                "effective_bookings.csv")
-    env["DYNAMO_HISTORY_PATH"] = os.path.join(out_dir,
-                                              "booking_state_history.csv")
-    env["DYNAMO_RECONCILIATION_PATH"] = os.path.join(
-        out_dir, "capacity_reconciliation.csv")
-    env["DYNAMO_FACTS_PATH"] = os.path.join(out_dir,
-                                            "daily_room_capacity_facts.csv")
-    env["DYNAMO_SUMMARY_PATH"] = os.path.join(out_dir, "quality_summary.json")
+    env = _jail.prepare_env_for_jail()
     if program.endswith("solve.sh"):
-        # The oracle entrypoint changes into its own directory and invokes
-        # the bin components (ingest/rebuild/prepare); run it from a workdir
-        # that keeps the sibling modules and bin/ package importable.
+        # Oracle: trusted reference, /solution available.
+        env["DYNAMO_INPUT_SCHEDULING"] = os.path.join(input_dir,
+                                                      "scheduling_events.csv")
+        env["DYNAMO_INPUT_ADJUSTMENTS"] = os.path.join(
+            input_dir, "reservation_adjustments.ndjson")
+        env["DYNAMO_INPUT_CLINICS"] = os.path.join(input_dir,
+                                                   "clinic_directory.csv")
+        env["DYNAMO_INPUT_ROOMS"] = os.path.join(input_dir, "room_directory.csv")
+        env["DYNAMO_LEDGER_PATH"] = os.path.join(work_dir,
+                                                 "canonical_events.csv")
+        env["DYNAMO_EFFECTIVE_PATH"] = os.path.join(out_dir,
+                                                    "effective_bookings.csv")
+        env["DYNAMO_HISTORY_PATH"] = os.path.join(out_dir,
+                                                  "booking_state_history.csv")
+        env["DYNAMO_RECONCILIATION_PATH"] = os.path.join(
+            out_dir, "capacity_reconciliation.csv")
+        env["DYNAMO_FACTS_PATH"] = os.path.join(out_dir,
+                                                "daily_room_capacity_facts.csv")
+        env["DYNAMO_SUMMARY_PATH"] = os.path.join(out_dir, "quality_summary.json")
         cwd = os.path.join(os.sep, "solution")
         cmd = ["/bin/bash", program]
-    else:
-        cwd = input_dir
-        cmd = [sys.executable, program]
-    proc = subprocess.run(
-        cmd, cwd=cwd, env=env, capture_output=True, timeout=120)
+        proc = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True,
+                              timeout=120)
+        return proc
+
+    # Agent: jail-isolated execution. The jail contains the submitted /app
+    # program (copied), the generated hidden inputs, and empty
+    # output/work/state dirs. /tests and /solution are not present.
+    jail.build()
+    jail.reset_mutable()
+    jail.install_program(os.path.join(os.sep, "app"))
+    jail.install_inputs(input_dir)
+
+    env["DYNAMO_INPUT_SCHEDULING"] = "/input/scheduling_events.csv"
+    env["DYNAMO_INPUT_ADJUSTMENTS"] = "/input/reservation_adjustments.ndjson"
+    env["DYNAMO_INPUT_CLINICS"] = "/input/clinic_directory.csv"
+    env["DYNAMO_INPUT_ROOMS"] = "/input/room_directory.csv"
+    env["DYNAMO_LEDGER_PATH"] = "/work/canonical_events.csv"
+    env["DYNAMO_EFFECTIVE_PATH"] = "/output/effective_bookings.csv"
+    env["DYNAMO_HISTORY_PATH"] = "/output/booking_state_history.csv"
+    env["DYNAMO_RECONCILIATION_PATH"] = "/output/capacity_reconciliation.csv"
+    env["DYNAMO_FACTS_PATH"] = "/output/daily_room_capacity_facts.csv"
+    env["DYNAMO_SUMMARY_PATH"] = "/output/quality_summary.json"
+    env["DYNAMO_STATE_PATH"] = "/state/state.json"
+
+    proc = jail.run([jail.interp, "/app/prepare_facts.py"], env)
     return proc
 
 
@@ -171,12 +192,25 @@ def _compare_one(produced, expected, label):
         "%s mismatch:\nproduced=%r\nexpected=%r" % (label, produced, expected))
 
 
-def _grade_variant(name, input_dir, tmp_path):
-    out_dir = tmp_path / (name + "_out")
-    work_dir = tmp_path / (name + "_work")
-    out_dir.mkdir()
-    work_dir.mkdir()
-    proc = _run_submitted(input_dir, str(out_dir), str(work_dir))
+def _grade_variant(name, input_dir, tmp_path, jail):
+    program = _program_under_test()
+    if program.endswith("solve.sh"):
+        # Oracle lifecycle: output/work live in pytest temp dirs (the oracle
+        # is trusted and /solution is available to it).
+        out_dir = tmp_path / (name + "_out")
+        work_dir = tmp_path / (name + "_work")
+        out_dir.mkdir()
+        work_dir.mkdir()
+        host_out = str(out_dir)
+        host_work = str(work_dir)
+    else:
+        # Agent lifecycle: the graded program runs inside a chroot jail. Its
+        # output/work/state dirs are the jail's /output,/work,/state, which are
+        # regular host dirs under the jail root that the verifier reads back.
+        host_out = jail.host("output")
+        host_work = jail.host("work")
+
+    proc = _run_submitted(input_dir, host_out, host_work, jail)
     assert proc.returncode == 0, (
         "submitted implementation failed on %s: %s"
         % (name, proc.stderr.decode("utf-8", "replace")))
@@ -184,28 +218,28 @@ def _grade_variant(name, input_dir, tmp_path):
     expected = hidden_reference._expected(input_dir)
 
     for out_name in OUTPUT_NAMES:
-        path = os.path.join(str(out_dir), out_name)
+        path = os.path.join(host_out, out_name)
         assert os.path.exists(path), "missing %s in %s" % (out_name, name)
         assert not os.path.islink(path), "symlink %s in %s" % (out_name, name)
         assert os.path.isfile(path), "not a regular file %s" % path
 
     for out_name in OUTPUT_NAMES:
         if out_name == "quality_summary.json":
-            produced = _read_summary(os.path.join(str(out_dir), out_name))
+            produced = _read_summary(os.path.join(host_out, out_name))
             exp = expected[out_name]
             _compare_one(produced, exp, "%s/%s" % (name, out_name))
         else:
-            produced = _read_csv(os.path.join(str(out_dir), out_name))
+            produced = _read_csv(os.path.join(host_out, out_name))
             exp = expected[out_name]
             assert produced[0] == _header_for(out_name), (
                 "header mismatch for %s/%s: %r" % (name, out_name, produced[0]))
             _compare_one(produced[1:], exp, "%s/%s" % (name, out_name))
 
     # No unexpected extra regular files in the hidden output directory.
-    extra = [e for e in os.listdir(str(out_dir))
+    extra = [e for e in os.listdir(host_out)
              if e not in OUTPUT_NAMES
-             and os.path.isfile(os.path.join(str(out_dir), e))
-             and not os.path.islink(os.path.join(str(out_dir), e))]
+             and os.path.isfile(os.path.join(host_out, e))
+             and not os.path.islink(os.path.join(host_out, e))]
     assert not extra, "unexpected output files for %s: %r" % (name, extra)
 
 
@@ -221,6 +255,11 @@ def hidden_inputs(tmp_path_factory):
     return dirs
 
 
+@pytest.fixture(scope="module")
+def jail(tmp_path_factory):
+    return _jail.Jail(str(tmp_path_factory.mktemp("jail")))
+
+
 @pytest.mark.parametrize("name", hidden_universes.UNIVERSE_NAMES)
-def test_hidden_universe(name, hidden_inputs, tmp_path):
-    _grade_variant(name, hidden_inputs[name], tmp_path)
+def test_hidden_universe(name, hidden_inputs, jail, tmp_path):
+    _grade_variant(name, hidden_inputs[name], tmp_path, jail)

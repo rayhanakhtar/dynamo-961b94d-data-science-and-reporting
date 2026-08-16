@@ -144,11 +144,70 @@ def _read_artifacts(out):
     return arts
 
 
+def _expected_derived_state(ledger):
+    """Independently recompute authoritative/effective from a canonical
+    ledger, using only the contract semantics (sections 5 and 7).
+
+    Returns {"effective": {booking: event_id or None},
+             "authoritative": {"booking|rev": event_id}}.
+    """
+    sorted_ledger = sorted(ledger, key=lambda r: r["event_id"])
+    authoritative = {}
+    for rec in sorted_ledger:
+        key = (rec["booking_id"], rec["revision"])
+        prior = authoritative.get(key)
+        if prior is None or (rec["created_ts"], rec["event_id"]) > \
+                (prior["created_ts"], prior["event_id"]):
+            authoritative[key] = rec
+    by_booking = {}
+    for rec in sorted_ledger:
+        by_booking.setdefault(rec["booking_id"], set()).add(rec["revision"])
+    effective = {}
+    for bid, revisions in by_booking.items():
+        chosen = None
+        for revision in sorted(revisions, reverse=True):
+            cand = authoritative.get((bid, revision))
+            if cand is not None and cand["status"] != "VOIDED":
+                chosen = cand
+                break
+        effective[bid] = chosen
+    return {
+        "effective": {bid: (rec["event_id"] if rec is not None else None)
+                      for bid, rec in effective.items()},
+        "authoritative": {"%s|%s" % (k[0], k[1]): v["event_id"]
+                          for k, v in authoritative.items()},
+    }
+
+
+def _check_derived_state_converges(state_path, scenario):
+    """Contract Section 30.3/30.5: after an incremental ingest + rebuild, the
+    persisted derived state (effective/authoritative) must converge to a fresh
+    recomputation over the complete persisted canonical ledger.
+
+    This is an observable state-level assertion: it reads only the persisted
+    state JSON (canonical_events, effective, authoritative, checkpoint) and
+    does not depend on how rebuild_state was implemented (no assumption about
+    a needs_rebuild flag or any optimization).
+    """
+    with open(state_path, encoding="utf-8") as h:
+        state = json.load(h)
+    ledger = state.get("canonical_events", [])
+    expected = _expected_derived_state(ledger)
+    assert state.get("effective") == expected["effective"], (
+        "persisted effective diverges from fresh recompute after %s "
+        "(incremental/restart state must converge per Section 30.3/30.5)"
+        % scenario)
+    assert state.get("authoritative") == expected["authoritative"], (
+        "persisted authoritative diverges from fresh recompute after %s "
+        "(incremental/restart state must converge per Section 30.3/30.5)"
+        % scenario)
+
+
 def _fresh(state, out, batch_dir):
     _ingest(state, batch_dir)
     _rebuild(state)
     _prepare(state, out)
-    return _read_artifacts(out)
+    return state, _read_artifacts(out)
 
 
 def _scenario_repeated_ingest(state, out, batch_dir):
@@ -156,7 +215,7 @@ def _scenario_repeated_ingest(state, out, batch_dir):
     _ingest(state, batch_dir)
     _rebuild(state)
     _prepare(state, out)
-    return _read_artifacts(out)
+    return state, _read_artifacts(out)
 
 
 def _scenario_split_batch(state, out, a_dir, b_dir):
@@ -164,7 +223,7 @@ def _scenario_split_batch(state, out, a_dir, b_dir):
     _ingest(state, b_dir)
     _rebuild(state)
     _prepare(state, out)
-    return _read_artifacts(out)
+    return state, _read_artifacts(out)
 
 
 def _scenario_restart(state, out, a_dir, b_dir):
@@ -175,14 +234,14 @@ def _scenario_restart(state, out, a_dir, b_dir):
     _ingest(state2, b_dir)
     _rebuild(state2)
     _prepare(state2, out)
-    return _read_artifacts(out)
+    return state2, _read_artifacts(out)
 
 
 def _scenario_replay(state, out, batch_dir):
     _ingest(state, batch_dir)
     _rebuild(state)
     _prepare(state, out, replay=True)
-    return _read_artifacts(out)
+    return state, _read_artifacts(out)
 
 
 def _scenario_revision_update(state, out, a_dir, b_dir):
@@ -192,7 +251,7 @@ def _scenario_revision_update(state, out, a_dir, b_dir):
     _ingest(state, b_dir)
     _rebuild(state)
     _prepare(state, out)
-    return _read_artifacts(out)
+    return state, _read_artifacts(out)
 
 
 def _scenario_partitions(state, out, a_dir, b_dir):
@@ -202,7 +261,7 @@ def _scenario_partitions(state, out, a_dir, b_dir):
     _ingest(state, b_dir)  # duplicate re-ingest of B
     _rebuild(state)
     _prepare(state, out)
-    return _read_artifacts(out)
+    return state, _read_artifacts(out)
 
 
 def _scenario_cross_source(state, out, sched_dir, adj_dir):
@@ -211,7 +270,7 @@ def _scenario_cross_source(state, out, sched_dir, adj_dir):
     _ingest(state, adj_dir)
     _rebuild(state)
     _prepare(state, out)
-    return _read_artifacts(out)
+    return state, _read_artifacts(out)
 
 
 @pytest.fixture(scope="module")
@@ -280,5 +339,10 @@ def test_stateful_convergence(scenario, uname, stateful_universes, tmp_path):
             s, o, u["sched"], u["adj"]),
     }[scenario]
 
-    produced = scn(state, out)
+    produced_state, produced = scn(state, out)
     _grade(state, out, produced, expected)
+    # Contract Section 30.3/30.5: whatever the execution history, the
+    # persisted derived state must converge to a fresh recomputation over the
+    # complete canonical ledger (observable at the state level, not only in
+    # the final artifacts).
+    _check_derived_state_converges(produced_state, scenario)
